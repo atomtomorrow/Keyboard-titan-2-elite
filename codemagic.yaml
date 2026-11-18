@@ -1,0 +1,46 @@
+workflows:
+  titan-keyboard-debug:
+    name: Titan Custom Keyboard - Debug APK
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+
+    environment:
+      vars:
+        SOURCE_ARCHIVE: "TitanCustomKeyboard-0.4.6-source.zip"
+        GRADLE_VERSION: "8.7"
+
+    scripts:
+      - name: Check uploaded source archive
+        script: |
+          set -e
+          test -f "$CM_BUILD_DIR/$SOURCE_ARCHIVE"
+          echo "Found source archive: $SOURCE_ARCHIVE"
+
+      - name: Extract Android project
+        script: |
+          set -e
+          mkdir -p "$CM_BUILD_DIR/project"
+          unzip -q "$CM_BUILD_DIR/$SOURCE_ARCHIVE" -d "$CM_BUILD_DIR/project"
+          test -f "$CM_BUILD_DIR/project/TitanCustomKeyboard/app/build.gradle"
+          echo "Android project extracted."
+
+      - name: Install Gradle
+        script: |
+          set -e
+          cd "$CM_BUILD_DIR"
+          curl -L --fail --silent --show-error \
+            "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
+            -o gradle.zip
+          unzip -q gradle.zip -d "$CM_BUILD_DIR"
+          "$CM_BUILD_DIR/gradle-${GRADLE_VERSION}/bin/gradle" --version
+
+      - name: Build debug APK
+        script: |
+          set -e
+          cd "$CM_BUILD_DIR/project/TitanCustomKeyboard"
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+          "$CM_BUILD_DIR/gradle-${GRADLE_VERSION}/bin/gradle" --no-daemon assembleDebug
+
+    artifacts:
+      - project/TitanCustomKeyboard/app/build/outputs/apk/debug/app-debug.apk
+      - project/TitanCustomKeyboard/app/build/outputs/**/*.apk
