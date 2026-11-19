@@ -16,7 +16,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Write source (TitanCustomKeyboard 0.7.2)
+      - name: Write source (TitanCustomKeyboard 0.7.3)
         run: |
           mkdir -p TitanCustomKeyboard TitanCustomKeyboard/app TitanCustomKeyboard/app/src/main TitanCustomKeyboard/app/src/main/assets TitanCustomKeyboard/app/src/main/java/com/ievhenii/titankeyboard TitanCustomKeyboard/app/src/main/res/values TitanCustomKeyboard/app/src/main/res/xml
           cat > 'TitanCustomKeyboard/settings.gradle' <<'EOF_TCK'
@@ -44,8 +44,8 @@ jobs:
                   applicationId 'com.ievhenii.titankeyboard'
                   minSdk 26
                   targetSdk 35
-                  versionCode 9
-                  versionName '0.7.2'
+                  versionCode 10
+                  versionName '0.7.3'
               }
           }
           EOF_TCK
@@ -349,7 +349,7 @@ jobs:
               private boolean isExcluded(int c){return (c>=7&&c<=16)||(c>=68&&c<=76)||c==55||c==56;}
               private void build(){
                   ScrollView sv=new ScrollView(this); root=new LinearLayout(this); root.setOrientation(1); root.setPadding(20,18,20,30); sv.addView(root); root.setBackgroundColor(0xfff3f5f8); setContentView(sv);
-                  root.addView(label("Titan Custom Keyboard 0.7.2",24,true)); root.addView(label("Редактор физических клавиш Titan 2 Elite",14,false));
+                  root.addView(label("Titan Custom Keyboard 0.7.3",24,true)); root.addView(label("Редактор физических клавиш Titan 2 Elite",14,false));
                   section("Язык ввода");
                   Spinner lang=new Spinner(this);
                   lang.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,new String[]{"Українська","Русский","English"}));
@@ -935,8 +935,10 @@ jobs:
                   super.onDestroy();
               }
 
-              @Override public View onCreateInputView() { return new View(this); }
-              @Override public boolean onEvaluateInputViewShown() { return false; }
+              // The suggestion bar is the keyboard's input view: Android then resizes the app above it
+              // and delivers touches to it (a candidates-only view floats over the app and may not get taps).
+              @Override public View onCreateInputView() { return buildBar(); }
+              @Override public boolean onEvaluateInputViewShown() { return true; }
               @Override public boolean onEvaluateFullscreenMode() { return false; }
 
               // ------------------------------------------------------------------ UI
@@ -961,7 +963,7 @@ jobs:
                   return new RippleDrawable(ColorStateList.valueOf(cRipple()), content, mask);
               }
 
-              @Override public View onCreateCandidatesView() {
+              private View buildBar() {
                   dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
 
                   LinearLayout outer = new LinearLayout(this);
@@ -1115,7 +1117,13 @@ jobs:
                           || var == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD || var == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD)
                           || cls == InputType.TYPE_CLASS_NUMBER && var == InputType.TYPE_NUMBER_VARIATION_PASSWORD;
                   if (!restarting && engine != null) engine.reloadLearned();   // picks up imported profiles
-                  setCandidatesViewShown(true);
+                  applyBottomPad();
+                  updatePill(false);
+                  refreshSuggestions();
+              }
+
+              @Override public void onStartInputView(EditorInfo info, boolean restarting) {
+                  super.onStartInputView(info, restarting);
                   applyBottomPad();
                   updatePill(false);
                   refreshSuggestions();
@@ -1295,7 +1303,6 @@ jobs:
                   }
                   int filled = res.size() + (addWord != null ? 1 : 0);
                   for (View dv : dividers) if (dv != null) dv.setVisibility(filled > 1 && addWord == null ? View.VISIBLE : View.INVISIBLE);
-                  setCandidatesViewShown(true);
               }
 
               private RippleDrawable outlineChip(int color) {
@@ -4921,14 +4928,14 @@ jobs:
         run: gradle assembleDebug --no-daemon --stacktrace
       - uses: actions/upload-artifact@v4
         with:
-          name: TitanCustomKeyboard-0.7.2-apk
+          name: TitanCustomKeyboard-0.7.3-apk
           path: TitanCustomKeyboard/app/build/outputs/apk/debug/*.apk
       - name: Put APK into the repository (apk/)
         run: |
           mkdir -p apk
-          cp TitanCustomKeyboard/app/build/outputs/apk/debug/app-debug.apk apk/TitanCustomKeyboard-0.7.2.apk
+          cp TitanCustomKeyboard/app/build/outputs/apk/debug/app-debug.apk apk/TitanCustomKeyboard-0.7.3.apk
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add apk/TitanCustomKeyboard-0.7.2.apk
-          git commit -m "APK 0.7.2 [skip ci]" || echo "nothing to commit"
+          git add apk/TitanCustomKeyboard-0.7.3.apk
+          git commit -m "APK 0.7.3 [skip ci]" || echo "nothing to commit"
           git push
