@@ -5,7 +5,10 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -13,7 +16,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Write source (TitanCustomKeyboard 0.7.1)
+      - name: Write source (TitanCustomKeyboard 0.7.2)
         run: |
           mkdir -p TitanCustomKeyboard TitanCustomKeyboard/app TitanCustomKeyboard/app/src/main TitanCustomKeyboard/app/src/main/assets TitanCustomKeyboard/app/src/main/java/com/ievhenii/titankeyboard TitanCustomKeyboard/app/src/main/res/values TitanCustomKeyboard/app/src/main/res/xml
           cat > 'TitanCustomKeyboard/settings.gradle' <<'EOF_TCK'
@@ -41,8 +44,8 @@ jobs:
                   applicationId 'com.ievhenii.titankeyboard'
                   minSdk 26
                   targetSdk 35
-                  versionCode 8
-                  versionName '0.7.1'
+                  versionCode 9
+                  versionName '0.7.2'
               }
           }
           EOF_TCK
@@ -346,7 +349,7 @@ jobs:
               private boolean isExcluded(int c){return (c>=7&&c<=16)||(c>=68&&c<=76)||c==55||c==56;}
               private void build(){
                   ScrollView sv=new ScrollView(this); root=new LinearLayout(this); root.setOrientation(1); root.setPadding(20,18,20,30); sv.addView(root); root.setBackgroundColor(0xfff3f5f8); setContentView(sv);
-                  root.addView(label("Titan Custom Keyboard 0.7.1",24,true)); root.addView(label("Редактор физических клавиш Titan 2 Elite",14,false));
+                  root.addView(label("Titan Custom Keyboard 0.7.2",24,true)); root.addView(label("Редактор физических клавиш Titan 2 Elite",14,false));
                   section("Язык ввода");
                   Spinner lang=new Spinner(this);
                   lang.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,new String[]{"Українська","Русский","English"}));
@@ -383,6 +386,9 @@ jobs:
                   renderUserWords();
                   freqList.addView(label("Загрузка…",12,false));
                   new Thread(()->{dictEngine.loadAll(); runOnUiThread(this::renderFreq);}).start();
+                  section("Отступ панели подсказок снизу");
+                  root.addView(label("Если панель подсказок перекрывает системная полоса с кнопкой «⌄», подними её ползунком. «Авто» — высота полосы навигации Android.",12,false));
+                  addBottomPadSetting();
                   section("Удержание — независимые таймеры"); addTimer("hold500","Удержание 1 (мс)",500); addTimer("hold1000","Удержание 2 (мс)",1000);
                   section("Повтор удаления"); addDeleteRepeatSetting();
                   section("Определение физической клавиши"); Button detect=new Button(this); detect.setText("ОПРЕДЕЛИТЬ КЛАВИШУ — НАЖМИ НА НЕЁ НА ТЕЛЕФОНЕ"); root.addView(detect); detectStatus=label("Ожидание",13,false); root.addView(detectStatus); detect.setOnClickListener(v->{detecting=true;detectStatus.setText("Теперь нажми физическую клавишу Titan 2 Elite");});
@@ -488,6 +494,18 @@ jobs:
                       }
                   }catch(Exception ex){Toast.makeText(this,"Ошибка файла: "+ex.getMessage(),Toast.LENGTH_LONG).show();}
               }
+              private void addBottomPadSetting(){
+                  LinearLayout box=new LinearLayout(this); box.setOrientation(1); root.addView(box);
+                  int cur=p.getInt("bottomPad",0);
+                  TextView val=label(padText(cur),13,false); box.addView(val);
+                  SeekBar seek=new SeekBar(this); seek.setMax(97); seek.setProgress(cur); box.addView(seek);
+                  seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){
+                      public void onProgressChanged(SeekBar s,int n,boolean user){val.setText(padText(n));}
+                      public void onStartTrackingTouch(SeekBar s){}
+                      public void onStopTrackingTouch(SeekBar s){p.edit().putInt("bottomPad",s.getProgress()).apply();Toast.makeText(MainActivity.this,"Применится при следующем открытии клавиатуры",Toast.LENGTH_SHORT).show();}
+                  });
+              }
+              private String padText(int n){return n==0?"Отступ снизу: Авто":"Отступ снизу: "+(n-1)+" dp";}
               private void addDeleteRepeatSetting(){
                   int min=30, max=1000, def=100;
                   LinearLayout box=new LinearLayout(this); box.setOrientation(1); root.addView(box);
@@ -1028,23 +1046,41 @@ jobs:
                   }
                   // Android 15+ draws the keyboard window edge-to-edge: the system navigation bar
                   // (hide-keyboard ⌄ and keyboard switcher) lies on top of the bottom of our view.
-                  // Lift the suggestion bar above it; our background fills the space under the buttons.
-                  if (Build.VERSION.SDK_INT >= 35) outer.setPadding(0, 0, 0, navBarHeightGuess());
+                  // Some firmwares report 0 for that bar to the keyboard, so we fall back to its real height.
+                  // The user can also set the gap by hand in the settings ("Отступ панели снизу").
+                  barRoot = outer;
+                  applyBottomPad();
                   outer.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
                       @Override public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
-                          int bottom;
+                          int b;
                           if (Build.VERSION.SDK_INT >= 30) {
-                              bottom = insets.getInsets(WindowInsets.Type.navigationBars()).bottom;
+                              b = Math.max(insets.getInsets(WindowInsets.Type.navigationBars()).bottom,
+                                           insets.getInsets(WindowInsets.Type.tappableElement()).bottom);
                           } else {
-                              bottom = insets.getSystemWindowInsetBottom();
+                              b = insets.getSystemWindowInsetBottom();
                           }
-                          v.setPadding(0, 0, 0, Math.max(0, bottom));
+                          lastInsetBottom = Math.max(0, b);
+                          applyBottomPad();
                           return insets;
                       }
                   });
                   outer.requestApplyInsets();
                   updatePill(false);
                   return outer;
+              }
+
+              private View barRoot;
+              private int lastInsetBottom = 0;
+
+              /** prefs "bottomPad": 0 = auto, N>0 = (N-1) dp set by hand. */
+              private void applyBottomPad() {
+                  if (barRoot == null) return;
+                  int manual = prefs == null ? 0 : prefs.getInt("bottomPad", 0);
+                  int pad;
+                  if (manual > 0) pad = dp(manual - 1);
+                  else if (lastInsetBottom > 0) pad = lastInsetBottom;
+                  else pad = Build.VERSION.SDK_INT >= 35 ? navBarHeightGuess() : 0;
+                  barRoot.setPadding(0, 0, 0, pad);
               }
 
               private int navBarHeightGuess() {
@@ -1080,6 +1116,7 @@ jobs:
                           || cls == InputType.TYPE_CLASS_NUMBER && var == InputType.TYPE_NUMBER_VARIATION_PASSWORD;
                   if (!restarting && engine != null) engine.reloadLearned();   // picks up imported profiles
                   setCandidatesViewShown(true);
+                  applyBottomPad();
                   updatePill(false);
                   refreshSuggestions();
               }
@@ -4884,5 +4921,14 @@ jobs:
         run: gradle assembleDebug --no-daemon --stacktrace
       - uses: actions/upload-artifact@v4
         with:
-          name: TitanCustomKeyboard-0.7.1-apk
+          name: TitanCustomKeyboard-0.7.2-apk
           path: TitanCustomKeyboard/app/build/outputs/apk/debug/*.apk
+      - name: Put APK into the repository (apk/)
+        run: |
+          mkdir -p apk
+          cp TitanCustomKeyboard/app/build/outputs/apk/debug/app-debug.apk apk/TitanCustomKeyboard-0.7.2.apk
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apk/TitanCustomKeyboard-0.7.2.apk
+          git commit -m "APK 0.7.2 [skip ci]" || echo "nothing to commit"
+          git push
