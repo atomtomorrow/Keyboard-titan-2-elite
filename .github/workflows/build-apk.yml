@@ -1,0 +1,4865 @@
+name: Build APK
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Write source (TitanCustomKeyboard 0.7.0)
+        run: |
+          mkdir -p TitanCustomKeyboard TitanCustomKeyboard/app TitanCustomKeyboard/app/src/main TitanCustomKeyboard/app/src/main/assets TitanCustomKeyboard/app/src/main/java/com/ievhenii/titankeyboard TitanCustomKeyboard/app/src/main/res/values TitanCustomKeyboard/app/src/main/res/xml
+          cat > 'TitanCustomKeyboard/settings.gradle' <<'EOF_TCK'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
+          rootProject.name = 'TitanCustomKeyboard'
+          include ':app'
+          EOF_TCK
+          cat > 'TitanCustomKeyboard/build.gradle' <<'EOF_TCK'
+          plugins {
+              id 'com.android.application' version '8.6.1' apply false
+          }
+          EOF_TCK
+          cat > 'TitanCustomKeyboard/gradle.properties' <<'EOF_TCK'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          EOF_TCK
+          cat > 'TitanCustomKeyboard/app/build.gradle' <<'EOF_TCK'
+          plugins { id 'com.android.application' }
+
+          android {
+              namespace 'com.ievhenii.titankeyboard'
+              compileSdk 35
+              defaultConfig {
+                  applicationId 'com.ievhenii.titankeyboard'
+                  minSdk 26
+                  targetSdk 35
+                  versionCode 7
+                  versionName '0.7.0'
+              }
+          }
+          EOF_TCK
+          cat > 'TitanCustomKeyboard/app/src/main/AndroidManifest.xml' <<'EOF_TCK'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+              <application
+                  android:allowBackup="true"
+                  android:label="Titan Custom Keyboard"
+                  android:theme="@style/AppTheme">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <service
+                      android:name=".TitanImeService"
+                      android:label="Titan Custom Keyboard"
+                      android:permission="android.permission.BIND_INPUT_METHOD"
+                      android:exported="true">
+                      <intent-filter><action android:name="android.view.InputMethod" /></intent-filter>
+                      <meta-data android:name="android.view.im" android:resource="@xml/method" />
+                  </service>
+              </application>
+          </manifest>
+          EOF_TCK
+          cat > 'TitanCustomKeyboard/app/src/main/res/values/strings.xml' <<'EOF_TCK'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">Клавиатура для Титана</string>
+          </resources>
+          EOF_TCK
+          cat > 'TitanCustomKeyboard/app/src/main/res/values/styles.xml' <<'EOF_TCK'
+          <resources>
+              <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+                  <item name="android:fontFamily">sans</item>
+                  <item name="android:colorAccent">#3759A5</item>
+                  <item name="android:windowLightStatusBar">true</item>
+                  <item name="android:statusBarColor">#FFFFFF</item>
+                  <item name="android:navigationBarColor">#FFFFFF</item>
+              </style>
+          </resources>
+          EOF_TCK
+          cat > 'TitanCustomKeyboard/app/src/main/res/xml/method.xml' <<'EOF_TCK'
+          <?xml version="1.0" encoding="utf-8"?>
+          <input-method xmlns:android="http://schemas.android.com/apk/res/android"
+              android:supportsSwitchingToNextInputMethod="false" />
+          EOF_TCK
+          cat > 'TitanCustomKeyboard/app/src/main/java/com/ievhenii/titankeyboard/LangBadge.java' <<'EOF_TCK'
+          package com.ievhenii.titankeyboard;
+
+          import android.content.Context;
+          import android.graphics.Color;
+          import android.graphics.PixelFormat;
+          import android.graphics.Typeface;
+          import android.graphics.drawable.GradientDrawable;
+          import android.os.Build;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.provider.Settings;
+          import android.util.TypedValue;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.view.WindowManager;
+          import android.view.animation.DecelerateInterpolator;
+          import android.view.animation.OvershootInterpolator;
+          import android.widget.FrameLayout;
+          import android.widget.LinearLayout;
+          import android.widget.PopupWindow;
+          import android.widget.TextView;
+          import android.widget.Toast;
+
+          /**
+           * Round language badge (UA / RU / EN) that pops up in the middle of the screen
+           * every time the layout changes.
+           *
+           * 1) If "display over other apps" is allowed — a system overlay window (works everywhere).
+           * 2) Otherwise — a PopupWindow attached to the suggestion bar of the keyboard.
+           * 3) If neither is possible — a short Toast.
+           */
+          final class LangBadge {
+              static final String[] CODES = {"UA", "RU", "EN"};
+              static final String[] NAMES = {"Українська", "Русский", "English"};
+              static final int[] BG = {0xFF0057B7, 0xFF3A4150, 0xFF6D3BEF};
+              static final int[] FG = {0xFFFFD500, 0xFFFFFFFF, 0xFFFFFFFF};
+
+              private final Context ctx;
+              private final Handler handler = new Handler(Looper.getMainLooper());
+              private static final class Holder { FrameLayout root; View circle; TextView code, name; }
+              private Holder overlay, pop, active;
+              private boolean overlayAdded = false;
+              private PopupWindow popup;
+              private final Runnable hide = new Runnable() {
+                  @Override public void run() { fadeOut(); }
+              };
+
+              LangBadge(Context ctx) { this.ctx = ctx; }
+
+              static int langColor(int lang) { return BG[clamp(lang)]; }
+              static int langTextColor(int lang) { return FG[clamp(lang)]; }
+              static int clamp(int lang) { return Math.max(0, Math.min(2, lang)); }
+
+              private int dp(float v) {
+                  return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, ctx.getResources().getDisplayMetrics());
+              }
+
+              private Holder buildView() {
+                  Holder h = new Holder();
+                  FrameLayout root = new FrameLayout(ctx);
+                  int pad = dp(16);
+                  root.setPadding(pad, pad, pad, pad);   // room for the shadow
+
+                  LinearLayout c = new LinearLayout(ctx);
+                  c.setOrientation(LinearLayout.VERTICAL);
+                  c.setGravity(Gravity.CENTER);
+                  GradientDrawable bg = new GradientDrawable();
+                  bg.setShape(GradientDrawable.OVAL);
+                  bg.setColor(BG[0]);
+                  bg.setStroke(dp(3), 0x55FFFFFF);
+                  c.setBackground(bg);
+                  c.setElevation(dp(10));
+
+                  TextView code = new TextView(ctx);
+                  code.setTextSize(TypedValue.COMPLEX_UNIT_SP, 34);
+                  code.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+                  code.setGravity(Gravity.CENTER);
+                  code.setIncludeFontPadding(false);
+                  c.addView(code, new LinearLayout.LayoutParams(-2, -2));
+
+                  TextView name = new TextView(ctx);
+                  name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+                  name.setGravity(Gravity.CENTER);
+                  name.setPadding(0, dp(3), 0, 0);
+                  c.addView(name, new LinearLayout.LayoutParams(-2, -2));
+
+                  int size = dp(108);
+                  root.addView(c, new FrameLayout.LayoutParams(size, size, Gravity.CENTER));
+                  h.root = root; h.circle = c; h.code = code; h.name = name;
+                  return h;
+              }
+
+              private void bind(Holder h, int lang) {
+                  lang = clamp(lang);
+                  GradientDrawable bg = (GradientDrawable) h.circle.getBackground();
+                  bg.setColor(BG[lang]);
+                  h.code.setText(CODES[lang]);
+                  h.code.setTextColor(FG[lang]);
+                  h.name.setText(NAMES[lang]);
+                  h.name.setTextColor((FG[lang] & 0x00FFFFFF) | 0xCC000000);
+              }
+
+              private boolean canOverlay() {
+                  return Build.VERSION.SDK_INT >= 23 && Settings.canDrawOverlays(ctx);
+              }
+
+              /** anchor — any view of the keyboard window (the suggestion bar); may be null. */
+              void show(int lang, View anchor) {
+                  handler.removeCallbacks(hide);
+                  try {
+                      if (canOverlay()) { showOverlay(lang); return; }
+                  } catch (Exception ignored) { overlayAdded = false; }
+                  try {
+                      if (anchor != null && anchor.isAttachedToWindow() && anchor.getWindowToken() != null) {
+                          showPopup(lang, anchor); return;
+                      }
+                  } catch (Exception ignored) { }
+                  Toast.makeText(ctx, CODES[clamp(lang)] + " · " + NAMES[clamp(lang)], Toast.LENGTH_SHORT).show();
+              }
+
+              private void showOverlay(int lang) {
+                  WindowManager wm = (WindowManager) ctx.getSystemService(Context.WINDOW_SERVICE);
+                  if (popup != null && popup.isShowing()) { try { popup.dismiss(); } catch (Exception ignored) { } }
+                  if (overlay == null) overlay = buildView();
+                  bind(overlay, lang);
+                  active = overlay;
+                  if (!overlayAdded) {
+                      WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                              WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
+                              WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                              WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                      | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                                      | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                              PixelFormat.TRANSLUCENT);
+                      lp.gravity = Gravity.CENTER;
+                      lp.y = -dp(60);
+                      wm.addView(overlay.root, lp);
+                      overlayAdded = true;
+                  }
+                  popIn();
+              }
+
+              private void showPopup(int lang, View anchor) {
+                  if (popup == null) {
+                      pop = buildView();
+                      popup = new PopupWindow(pop.root, -2, -2, false);
+                      popup.setTouchable(false);
+                      popup.setClippingEnabled(false);
+                      popup.setAnimationStyle(0);
+                      popup.setBackgroundDrawable(null);
+                  }
+                  bind(pop, lang);
+                  active = pop;
+                  if (!popup.isShowing()) {
+                      int screenH = ctx.getResources().getDisplayMetrics().heightPixels;
+                      // Badge centre roughly in the middle of the screen, measured from the bottom edge
+                      int y = Math.max(anchor.getHeight() + dp(40), screenH / 2 - dp(70));
+                      popup.showAtLocation(anchor, Gravity.CENTER_HORIZONTAL | Gravity.BOTTOM, 0, y);
+                  }
+                  popIn();
+              }
+
+              private void popIn() {
+                  View circle = active.circle;
+                  circle.animate().cancel();
+                  circle.setAlpha(0f);
+                  circle.setScaleX(0.55f);
+                  circle.setScaleY(0.55f);
+                  circle.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(220)
+                          .setInterpolator(new OvershootInterpolator(1.6f)).start();
+                  handler.postDelayed(hide, 900);
+              }
+
+              private void fadeOut() {
+                  if (active == null) return;
+                  View circle = active.circle;
+                  circle.animate().cancel();
+                  circle.animate().alpha(0f).scaleX(0.85f).scaleY(0.85f).setDuration(240)
+                          .setInterpolator(new DecelerateInterpolator())
+                          .withEndAction(new Runnable() { @Override public void run() { removeAll(); } })
+                          .start();
+              }
+
+              void removeAll() {
+                  handler.removeCallbacks(hide);
+                  try {
+                      if (overlayAdded && overlay != null) {
+                          ((WindowManager) ctx.getSystemService(Context.WINDOW_SERVICE)).removeView(overlay.root);
+                      }
+                  } catch (Exception ignored) { }
+                  overlayAdded = false;
+                  try { if (popup != null && popup.isShowing()) popup.dismiss(); } catch (Exception ignored) { }
+              }
+
+              static int textOn(int bg) {
+                  int r = Color.red(bg), g = Color.green(bg), b = Color.blue(bg);
+                  return (r * 299 + g * 587 + b * 114) / 1000 > 150 ? 0xFF111111 : 0xFFFFFFFF;
+              }
+          }
+          EOF_TCK
+          cat > 'TitanCustomKeyboard/app/src/main/java/com/ievhenii/titankeyboard/MainActivity.java' <<'EOF_TCK'
+          package com.ievhenii.titankeyboard;
+
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.os.Bundle;
+          import android.provider.Settings;
+          import android.net.Uri;
+          import android.graphics.Typeface;
+          import android.text.InputType;
+          import android.view.KeyEvent;
+          import android.widget.*;
+          import java.util.*;
+          import org.json.JSONObject;
+          import java.io.InputStream;
+          import java.io.OutputStream;
+          import java.nio.charset.StandardCharsets;
+
+          public class MainActivity extends Activity {
+              private SharedPreferences p;
+              private LinearLayout root, rowsRoot;
+              private boolean detecting=false;
+              private static final int REQ_EXPORT=7101, REQ_IMPORT=7102;
+              private TextView detectStatus, overlayStatus;
+              private LangBadge testBadge;
+              private SuggestionEngine dictEngine;
+              private LinearLayout userList, freqList;
+              private TextView userCount;
+              private final List<Row> rows=new ArrayList<>();
+              static class Row { int code; String label; EditText[] f=new EditText[6]; Row(int c,String l){code=c;label=l;} }
+              private static final int[] CODES=new int[28];
+              private static final String[] NAMES=new String[28];
+              static {
+                  String alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+                  for(int i=0;i<26;i++){ CODES[i]=29+i; NAMES[i]=String.valueOf(alphabet.charAt(i)); }
+                  CODES[26]=62; NAMES[26]="Пробел";
+                  CODES[27]=63; NAMES[27]="SYM — ю";
+              }
+              private final String[] layers={"tap","alt","sym","shift","hold500","hold1000"};
+              private final String[] hints={"Коротко","ALT","SYM","SHIFT","0,5 сек","1 сек"};
+              @Override public void onCreate(Bundle b){super.onCreate(b);p=getSharedPreferences("keyboard",MODE_PRIVATE);build();}
+              @Override public boolean dispatchKeyEvent(KeyEvent e){
+                  if(detecting && e.getAction()==KeyEvent.ACTION_DOWN && e.getRepeatCount()==0){
+                      int c=e.getKeyCode(); detecting=false;
+                      detectStatus.setText("Определена клавиша: "+KeyEvent.keyCodeToString(c)+" (код "+c+")"+(isExcluded(c)?" — исключена из списка по настройкам":""));
+                      return true;
+                  }
+                  return super.dispatchKeyEvent(e);
+              }
+              private boolean isExcluded(int c){return (c>=7&&c<=16)||(c>=68&&c<=76)||c==55||c==56;}
+              private void build(){
+                  ScrollView sv=new ScrollView(this); root=new LinearLayout(this); root.setOrientation(1); root.setPadding(20,18,20,30); sv.addView(root); root.setBackgroundColor(0xfff3f5f8); setContentView(sv);
+                  root.addView(label("Titan Custom Keyboard 0.7.0",24,true)); root.addView(label("Редактор физических клавиш Titan 2 Elite",14,false));
+                  section("Язык ввода");
+                  Spinner lang=new Spinner(this);
+                  lang.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,new String[]{"Українська","Русский","English"}));
+                  lang.setSelection(p.getInt("language",0)); root.addView(lang);
+                  root.addView(label("Быстрое переключение прямо при наборе: зажми SHIFT и нажми ПРОБЕЛ. Порядок: Українська → Русский → English → Українська. Ещё можно нажать на цветной значок языка справа в панели подсказок. Долгое нажатие на значок открывает эти настройки.",12,false));
+                  section("Круглый значок смены языка");
+                  root.addView(label("При каждой смене языка в центре экрана на секунду появляется круглый значок UA / RU / EN. Чтобы он показывался поверх любого приложения, разреши «Показ поверх других окон». Без разрешения значок появляется над панелью подсказок.",12,false));
+                  overlayStatus=label("",13,true); root.addView(overlayStatus);
+                  Button ov=new Button(this); ov.setText("РАЗРЕШИТЬ ПОКАЗ ПОВЕРХ ДРУГИХ ОКОН"); root.addView(ov);
+                  ov.setOnClickListener(v->{try{startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,Uri.parse("package:"+getPackageName())));}catch(Exception ex){startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION));}});
+                  Button test=new Button(this); test.setText("ПОКАЗАТЬ ЗНАЧОК (ПРОВЕРКА)"); root.addView(test);
+                  test.setOnClickListener(v->{if(testBadge==null)testBadge=new LangBadge(this);testBadge.show(lang.getSelectedItemPosition(),null);});
+                  updateOverlayStatus();
+                  section("Мой словарь");
+                  root.addView(label("Свои слова (имена, названия, термины, сленг) всегда предлагаются первыми. Добавить можно здесь — по одному или сразу списком, — или прямо при наборе: если слова нет в словаре, справа в панели подсказок появится «+ слово», нажми на него. Долгое нажатие на подсказку убирает слово из словаря.",12,false));
+                  EditText addField=new EditText(this);
+                  addField.setHint("Слова через пробел, запятую или с новой строки");
+                  addField.setMinLines(2);
+                  addField.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE|InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+                  root.addView(addField);
+                  Button addBtn=new Button(this); addBtn.setText("ДОБАВИТЬ В МОЙ СЛОВАРЬ"); root.addView(addBtn);
+                  dictEngine=new SuggestionEngine(this,p,false);
+                  addBtn.setOnClickListener(v->{
+                      int n=0,bad=0;
+                      for(String w:addField.getText().toString().split("[\\s,;]+")){ if(w.trim().isEmpty())continue; if(dictEngine.addUserWord(w))n++; else bad++; }
+                      addField.setText("");
+                      Toast.makeText(this,n>0?("Добавлено слов: "+n+(bad>0?" · пропущено: "+bad:"")):"Ничего не добавлено",Toast.LENGTH_SHORT).show();
+                      renderUserWords(); renderFreq();
+                  });
+                  userCount=label("",13,true); userCount.setPadding(0,12,0,4); root.addView(userCount);
+                  userList=new LinearLayout(this); userList.setOrientation(1); root.addView(userList);
+                  TextView ft=label("Часто набираешь, но нет в словаре",13,true); ft.setPadding(0,14,0,4); root.addView(ft);
+                  freqList=new LinearLayout(this); freqList.setOrientation(1); root.addView(freqList);
+                  renderUserWords();
+                  freqList.addView(label("Загрузка…",12,false));
+                  new Thread(()->{dictEngine.loadAll(); runOnUiThread(this::renderFreq);}).start();
+                  section("Удержание — независимые таймеры"); addTimer("hold500","Удержание 1 (мс)",500); addTimer("hold1000","Удержание 2 (мс)",1000);
+                  section("Повтор удаления"); addDeleteRepeatSetting();
+                  section("Определение физической клавиши"); Button detect=new Button(this); detect.setText("ОПРЕДЕЛИТЬ КЛАВИШУ — НАЖМИ НА НЕЁ НА ТЕЛЕФОНЕ"); root.addView(detect); detectStatus=label("Ожидание",13,false); root.addView(detectStatus); detect.setOnClickListener(v->{detecting=true;detectStatus.setText("Теперь нажми физическую клавишу Titan 2 Elite");});
+                  section("Физические модификаторы");
+                  root.addView(label("ALT Left — 57 · SHIFT Left — 59 · SHIFT Right — 60 · SPACE — 62 · SYM — 63 (обычная клавиша: ю / Shift+SYM: Ю). Оба SHIFT переключают заглавные буквы; SHIFT + ПРОБЕЛ меняет язык.",13,false));
+                  section("Назначения клавиш"); root.addView(label("Коротко | ALT | SYM-слой (для старых назначений) | SHIFT | 0,5 сек. | 1 сек.",12,true)); rowsRoot=new LinearLayout(this); rowsRoot.setOrientation(1); root.addView(rowsRoot);
+                  for(int i=0;i<CODES.length;i++) addRow(CODES[i],NAMES[i]);
+                  section("Функции SHIFT"); root.addView(label("Левый и правый SHIFT работают одинаково: только заглавные буквы. SYM (код 63) по умолчанию вводит ю, с Shift — Ю. ALT — цифры и спецсимволы.",13,false));
+                  Button save=new Button(this); save.setText("СОХРАНИТЬ ВСЕ НАСТРОЙКИ"); root.addView(save); save.setOnClickListener(v->{saveCurrentRows(lang);Toast.makeText(this,"Сохранено",Toast.LENGTH_SHORT).show();});
+                  section("Резервная копия профиля");
+                  Button export=new Button(this); export.setText("ЭКСПОРТИРОВАТЬ ПРОФИЛЬ В ФАЙЛ"); root.addView(export);
+                  export.setOnClickListener(v->{saveCurrentRows(lang);Intent i=new Intent(Intent.ACTION_CREATE_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);i.setType("application/json");i.putExtra(Intent.EXTRA_TITLE,"TitanKeyboard-profile.json");startActivityForResult(i,REQ_EXPORT);});
+                  Button imp=new Button(this); imp.setText("ИМПОРТИРОВАТЬ ПРОФИЛЬ ИЗ ФАЙЛА"); root.addView(imp);
+                  imp.setOnClickListener(v->{Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);i.setType("*/*");startActivityForResult(i,REQ_IMPORT);});
+                  Button ime=new Button(this); ime.setText("НАСТРОЙКИ КЛАВИАТУР ANDROID"); root.addView(ime); ime.setOnClickListener(v->startActivity(new Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)));
+                  Button reset=new Button(this); reset.setText("СБРОСИТЬ НАЗНАЧЕНИЯ"); root.addView(reset); reset.setOnClickListener(v->new android.app.AlertDialog.Builder(this).setMessage("Сбросить все назначения?").setNegativeButton("Отмена",null).setPositiveButton("Сбросить",(d,w)->{SharedPreferences.Editor ed=p.edit();for(String k:p.getAll().keySet())if(k.startsWith("key_"))ed.remove(k);ed.apply();recreate();}).show());
+              }
+              @Override protected void onResume(){super.onResume();updateOverlayStatus();if(dictEngine!=null){dictEngine.reloadLearned();renderUserWords();if(dictEngine.dictsLoaded())renderFreq();}}
+              private TextView chipButton(String text,int color){
+                  TextView b=new TextView(this); b.setText(text); b.setTextSize(13); b.setTypeface(null,Typeface.BOLD); b.setTextColor(color);
+                  b.setPadding(22,10,22,10); b.setGravity(android.view.Gravity.CENTER);
+                  android.graphics.drawable.GradientDrawable g=new android.graphics.drawable.GradientDrawable();
+                  g.setCornerRadius(40); g.setStroke(2,color); g.setColor(0x00000000); b.setBackground(g); return b;
+              }
+              private LinearLayout wordRow(String word,String extra){
+                  LinearLayout row=new LinearLayout(this); row.setOrientation(0); row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+                  row.setPadding(16,8,8,8); row.setBackgroundColor(0xffffffff);
+                  TextView t=label(word,15,false); row.addView(t,new LinearLayout.LayoutParams(0,-2,1));
+                  if(extra!=null){TextView x=label(extra,12,false);x.setTextColor(0xff8a93a3);x.setPadding(0,0,16,0);row.addView(x);}
+                  return row;
+              }
+              private void renderUserWords(){
+                  if(userList==null||dictEngine==null)return;
+                  userList.removeAllViews();
+                  java.util.List<String> words=dictEngine.userWordList();
+                  userCount.setText("В моём словаре: "+words.size());
+                  if(words.isEmpty()){userList.addView(label("Пока пусто",12,false));return;}
+                  for(String w:words){
+                      LinearLayout row=wordRow(w,null);
+                      TextView del=chipButton("✕",0xffb42318);
+                      del.setOnClickListener(v->{dictEngine.removeUserWord(w);renderUserWords();renderFreq();});
+                      row.addView(del);
+                      LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2); lp.bottomMargin=3; userList.addView(row,lp);
+                  }
+              }
+              private void renderFreq(){
+                  if(freqList==null||dictEngine==null||!dictEngine.dictsLoaded())return;
+                  freqList.removeAllViews();
+                  java.util.List<String[]> items=dictEngine.frequentUnknown(20);
+                  if(items.isEmpty()){freqList.addView(label("Пока нет — такие слова появятся здесь, когда наберёшь их хотя бы 2 раза.",12,false));return;}
+                  for(String[] it:items){
+                      final String w=it[0];
+                      LinearLayout row=wordRow(w,"×"+it[1]);
+                      TextView add=chipButton("+ ДОБАВИТЬ",0xff3759A5);
+                      add.setOnClickListener(v->{dictEngine.addUserWord(w);renderUserWords();renderFreq();});
+                      row.addView(add);
+                      LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2); lp.bottomMargin=3; freqList.addView(row,lp);
+                  }
+              }
+              private void updateOverlayStatus(){
+                  if(overlayStatus==null)return;
+                  boolean ok=android.os.Build.VERSION.SDK_INT<23||Settings.canDrawOverlays(this);
+                  overlayStatus.setText(ok?"✓ Показ поверх других окон разрешён":"Показ поверх других окон не разрешён");
+                  overlayStatus.setTextColor(ok?0xff1a7f37:0xffb42318);
+              }
+              private void saveCurrentRows(Spinner lang){
+                  SharedPreferences.Editor ed=p.edit().putInt("language",lang.getSelectedItemPosition());
+                  for(Row r:rows)for(int j=0;j<layers.length;j++)ed.putString(key(r.code,layers[j]),r.f[j].getText().toString());
+                  ed.apply();
+              }
+              @Override protected void onActivityResult(int requestCode,int resultCode,Intent data){
+                  super.onActivityResult(requestCode,resultCode,data);
+                  if(resultCode!=RESULT_OK||data==null||data.getData()==null)return;
+                  try{
+                      if(requestCode==REQ_EXPORT){
+                          JSONObject obj=new JSONObject();
+                          for(Map.Entry<String,?> e:p.getAll().entrySet())obj.put(e.getKey(),e.getValue());
+                          try(OutputStream out=getContentResolver().openOutputStream(data.getData())){
+                              if(out==null)throw new Exception("Не удалось открыть файл");
+                              out.write(obj.toString(2).getBytes(StandardCharsets.UTF_8));
+                          }
+                          Toast.makeText(this,"Профиль экспортирован",Toast.LENGTH_LONG).show();
+                      }else if(requestCode==REQ_IMPORT){
+                          StringBuilder b=new StringBuilder();
+                          try(InputStream in=getContentResolver().openInputStream(data.getData())){
+                              if(in==null)throw new Exception("Не удалось открыть файл");
+                              byte[] buf=new byte[4096];int n;while((n=in.read(buf))>0)b.append(new String(buf,0,n,StandardCharsets.UTF_8));
+                          }
+                          JSONObject obj=new JSONObject(b.toString());
+                          SharedPreferences.Editor ed=p.edit().clear();
+                          java.util.Iterator<String> it=obj.keys();
+                          while(it.hasNext()){
+                              String k=it.next();Object v=obj.get(k);
+                              if(v instanceof Boolean)ed.putBoolean(k,(Boolean)v);
+                              else if(v instanceof Integer)ed.putInt(k,(Integer)v);
+                              else if(v instanceof Long)ed.putLong(k,(Long)v);
+                              else if(v instanceof Double)ed.putFloat(k,((Double)v).floatValue());
+                              else if(v instanceof String)ed.putString(k,(String)v);
+                          }
+                          ed.apply();
+                          Toast.makeText(this,"Профиль импортирован. Перезапусти клавиатуру.",Toast.LENGTH_LONG).show();
+                          recreate();
+                      }
+                  }catch(Exception ex){Toast.makeText(this,"Ошибка файла: "+ex.getMessage(),Toast.LENGTH_LONG).show();}
+              }
+              private void addDeleteRepeatSetting(){
+                  int min=30, max=1000, def=100;
+                  LinearLayout box=new LinearLayout(this); box.setOrientation(1); root.addView(box);
+                  TextView val=label("Интервал повтора Delete: "+p.getInt("deleteRepeatMs",def)+" мс",13,false); box.addView(val);
+                  SeekBar seek=new SeekBar(this); seek.setMax(max-min); seek.setProgress(Math.max(0,Math.min(max-min,p.getInt("deleteRepeatMs",def)-min))); box.addView(seek);
+                  box.addView(label("Меньше значение — быстрее удаление. Диапазон 30–1000 мс.",11,false));
+                  seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){
+                      public void onProgressChanged(SeekBar b,int n,boolean user){val.setText("Интервал повтора Delete: "+(n+min)+" мс");}
+                      public void onStartTrackingTouch(SeekBar b){}
+                      public void onStopTrackingTouch(SeekBar b){p.edit().putInt("deleteRepeatMs",b.getProgress()+min).apply();}
+                  });
+              }
+              private void addTimer(String key,String title,int def){LinearLayout box=new LinearLayout(this);box.setOrientation(1);root.addView(box);TextView val=label(title+": "+p.getInt(key,def),13,false);box.addView(val);SeekBar s=new SeekBar(this);s.setMax(3000);s.setProgress(p.getInt(key,def));box.addView(s);s.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){public void onProgressChanged(SeekBar b,int n,boolean u){val.setText(title+": "+n+" мс (0 = выкл.)");}public void onStartTrackingTouch(SeekBar b){}public void onStopTrackingTouch(SeekBar b){p.edit().putInt(key,b.getProgress()).apply();}});}
+              private void addRow(int code,String name){Row r=new Row(code,name);rows.add(r);LinearLayout card=new LinearLayout(this);card.setOrientation(1);card.setPadding(8,6,8,8);card.setBackgroundColor(0xffffffff);LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(-1,-2);cp.bottomMargin=5;rowsRoot.addView(card,cp);card.addView(label(name+" • Android keycode "+code,14,true));LinearLayout line=new LinearLayout(this);card.addView(line);for(int j=0;j<layers.length;j++){LinearLayout col=new LinearLayout(this);col.setOrientation(1);col.setPadding(2,0,2,0);line.addView(col,new LinearLayout.LayoutParams(0,-2,1));col.addView(label(hints[j],10,false));EditText e=new EditText(this);e.setSingleLine(true);e.setTextSize(13);e.setPadding(3,0,3,0);e.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);e.setHint("—");e.setText(p.getString(key(code,layers[j]),defaultFor(code,layers[j])));col.addView(e,new LinearLayout.LayoutParams(-1,42));r.f[j]=e;}}
+              private String defaultFor(int code,String layer){
+                  if(code==63 && layer.equals("tap"))return "ю";
+                  if(code==49 && layer.equals("alt"))return "_";
+                  if(code==40 && layer.equals("hold500"))return "Ж";
+                  if(code==41 && layer.equals("hold500"))return "ь";
+                  if(code==47 && layer.equals("hold500"))return "ы";
+                  if(layer.equals("hold1000")){
+                      switch(code){
+                          case 45:return "0"; case 46:return "3"; case 47:return "4";
+                          case 51:return "1"; case 52:return "8"; case 54:return "7";
+                          case 31:return "9"; case 32:return "5"; case 33:return "2";
+                          case 34:return "6";
+                      }
+                  }
+                  if(layer.equals("alt")){if(code>=29&&code<=54){char c=(char)('a'+code-29);String sym=altLegend(c);if(sym!=null)return sym;}return "";}
+                  // Left SHIFT is handled as uppercase in the IME; do not preload symbol legends here.
+                  if(layer.equals("shift"))return "";
+                  return "";
+              }
+              private String altLegend(char c){switch(c){case'q':return"0";case'w':return"1";case'e':return"2";case'r':return"3";case't':return"(";case'y':return")";case'u':return"_";case'i':return"";case'o':return"+";case'p':return"0";case'a':return"*";case's':return"4";case'd':return"5";case'f':return"6";case'g':return"/";case'h':return":";case'j':return"#";case'k':return"'";case'l':return"\"";case'z':return"7";case'x':return"8";case'c':return"9";case'v':return"?";case'b':return"!";case'n':return",";case'm':return".";}return null;}
+              private String key(int c,String l){return "key_"+c+"_"+l;} private void section(String s){TextView t=label(s,17,true);t.setPadding(0,18,0,6);root.addView(t);} private TextView label(String s,int size,boolean bold){TextView t=new TextView(this);t.setText(s);t.setTextSize(size);t.setTextColor(0xff172033);if(bold)t.setTypeface(null,Typeface.BOLD);return t;}
+          }
+          EOF_TCK
+          cat > 'TitanCustomKeyboard/app/src/main/java/com/ievhenii/titankeyboard/SuggestionEngine.java' <<'EOF_TCK'
+          package com.ievhenii.titankeyboard;
+
+          import android.content.Context;
+          import android.content.SharedPreferences;
+
+          import java.io.BufferedReader;
+          import java.io.InputStreamReader;
+          import java.nio.charset.StandardCharsets;
+          import java.util.ArrayList;
+          import java.util.Collections;
+          import java.util.Comparator;
+          import java.util.HashMap;
+          import java.util.LinkedHashMap;
+          import java.util.List;
+          import java.util.Locale;
+          import java.util.Map;
+
+          /**
+           * Offline multilingual word suggestions (UA / RU / EN).
+           * - frequency dictionaries in assets (dict_uk.txt, dict_ru.txt, dict_en.txt), most frequent first
+           * - completion of the word being typed + correction of one typo
+           * - personal words: everything you type is learned locally (prefs "word_*", included in profile export)
+           * - script detection: Latin letters -> English, Cyrillic -> current language first, then the other Cyrillic one
+           */
+          final class SuggestionEngine {
+              static final int UA = 0, RU = 1, EN = 2;
+              private static final String[] FILES = {"dict_uk.txt", "dict_ru.txt", "dict_en.txt"};
+
+              private static final class Dict {
+                  final String[] words;     // normalised (lowercase), in frequency order
+                  final String[] display;   // as written in the dictionary (keeps ё, apostrophes, capitals of names)
+                  final java.util.HashSet<String> set;
+                  Dict(String[] w, String[] d) { words = w; display = d; set = new java.util.HashSet<>(java.util.Arrays.asList(w)); }
+              }
+
+              private final Context ctx;
+              private final SharedPreferences prefs;
+              private final Dict[] dicts = new Dict[3];
+              private final Map<String, Integer> learned = new HashMap<>();
+              /** My dictionary: words added by hand (prefs "udict_<word>" = word as written). */
+              private final Map<String, String> userWords = new HashMap<>();
+
+              SuggestionEngine(Context ctx, SharedPreferences prefs) { this(ctx, prefs, true); }
+
+              SuggestionEngine(Context ctx, SharedPreferences prefs, boolean async) {
+                  this.ctx = ctx.getApplicationContext();
+                  this.prefs = prefs;
+                  reloadLearned();
+                  if (async) new Thread(new Runnable() {
+                      @Override public void run() { loadAll(); }
+                  }, "dict-loader").start();
+              }
+
+              void loadAll() { for (int i = 0; i < 3; i++) load(i); }
+
+              private void load(int lang) {
+                  ArrayList<String> w = new ArrayList<>(), d = new ArrayList<>();
+                  java.util.HashSet<String> seen = new java.util.HashSet<>();
+                  try (BufferedReader r = new BufferedReader(new InputStreamReader(ctx.getAssets().open(FILES[lang]), StandardCharsets.UTF_8))) {
+                      String line;
+                      while ((line = r.readLine()) != null) {
+                          line = line.trim();
+                          if (line.isEmpty() || line.startsWith("#")) continue;
+                          String n = norm(line);
+                          if (seen.add(n)) { w.add(n); d.add(line.replace('’', '\'')); }
+                      }
+                  } catch (Exception ignored) { }
+                  synchronized (dicts) { dicts[lang] = new Dict(w.toArray(new String[0]), d.toArray(new String[0])); }
+              }
+
+              static String norm(String s) {
+                  return s.toLowerCase(Locale.ROOT).replace('ё', 'е').replace('’', '\'').replace('ʼ', '\'');
+              }
+
+              synchronized void reloadLearned() {
+                  learned.clear();
+                  userWords.clear();
+                  if (prefs == null) return;
+                  for (Map.Entry<String, ?> e : prefs.getAll().entrySet()) {
+                      if (e.getKey().startsWith("word_") && e.getValue() instanceof Integer) {
+                          learned.put(e.getKey().substring(5), (Integer) e.getValue());
+                      } else if (e.getKey().startsWith("udict_") && e.getValue() instanceof String) {
+                          userWords.put(e.getKey().substring(6), (String) e.getValue());
+                      }
+                  }
+              }
+
+              /** Cleans a word typed by the user: trims spaces/punctuation around it. Returns null if it is not a word. */
+              static String cleanWord(String raw) {
+                  if (raw == null) return null;
+                  String w = raw.trim().replace('’', '\'').replace('ʼ', '\'');
+                  w = w.replaceAll("^[^\\p{L}]+|[^\\p{L}]+$", "");
+                  if (w.length() < 2 || w.length() > 32) return null;
+                  if (!w.matches("[\\p{L}][\\p{L}'-]*")) return null;
+                  return w;
+              }
+
+              /** Adds a word to my dictionary; returns false if it is not a word or already there. */
+              synchronized boolean addUserWord(String raw) {
+                  String w = cleanWord(raw);
+                  if (w == null) return false;
+                  String n = norm(w);
+                  if (w.equals(userWords.get(n))) return false;
+                  userWords.put(n, w);
+                  if (prefs != null) prefs.edit().putString("udict_" + n, w).apply();
+                  return true;
+              }
+
+              synchronized boolean removeUserWord(String word) {
+                  String n = norm(word);
+                  boolean had = userWords.remove(n) != null;
+                  if (prefs != null) prefs.edit().remove("udict_" + n).apply();
+                  return had;
+              }
+
+              synchronized boolean isUserWord(String word) { return userWords.containsKey(norm(word)); }
+
+              synchronized boolean isLearned(String word) { return learned.containsKey(norm(word)); }
+
+              synchronized List<String> userWordList() {
+                  ArrayList<String> l = new ArrayList<>(userWords.values());
+                  Collections.sort(l, String.CASE_INSENSITIVE_ORDER);
+                  return l;
+              }
+
+              /** True if the word is in a built-in dictionary or in my dictionary. */
+              boolean isKnown(String word) {
+                  String n = norm(word);
+                  synchronized (this) { if (userWords.containsKey(n)) return true; }
+                  synchronized (dicts) {
+                      for (Dict d : dicts) if (d != null && d.set.contains(n)) return true;
+                  }
+                  return false;
+              }
+
+              boolean dictsLoaded() { synchronized (dicts) { return dicts[0] != null && dicts[1] != null && dicts[2] != null; } }
+
+              /** Words you type often (2+ times) that are in no dictionary yet: {word, count}. */
+              synchronized List<String[]> frequentUnknown(int max) {
+                  ArrayList<Map.Entry<String, Integer>> all = new ArrayList<>(learned.entrySet());
+                  Collections.sort(all, new Comparator<Map.Entry<String, Integer>>() {
+                      @Override public int compare(Map.Entry<String, Integer> a, Map.Entry<String, Integer> b) {
+                          return Integer.compare(b.getValue(), a.getValue());
+                      }
+                  });
+                  ArrayList<String[]> out = new ArrayList<>();
+                  for (Map.Entry<String, Integer> e : all) {
+                      if (e.getValue() < 2) break;
+                      if (isKnown(e.getKey())) continue;
+                      out.add(new String[]{e.getKey(), String.valueOf(e.getValue())});
+                      if (out.size() >= max) break;
+                  }
+                  return out;
+              }
+
+              synchronized void learn(String word, int amount) {
+                  if (word == null) return;
+                  String w = norm(word);
+                  if (w.length() < 2 || w.length() > 32) return;
+                  int n = Math.min(10000, (learned.containsKey(w) ? learned.get(w) : 0) + amount);
+                  learned.put(w, n);
+                  if (prefs != null) prefs.edit().putInt("word_" + w, n).apply();
+              }
+
+              synchronized void forget(String word) {
+                  String w = norm(word);
+                  learned.remove(w);
+                  if (prefs != null) prefs.edit().remove("word_" + w).apply();
+              }
+
+              static boolean isLatin(String s) {
+                  for (int i = 0; i < s.length(); i++) {
+                      char c = s.charAt(i);
+                      if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) return true;
+                  }
+                  return false;
+              }
+
+              /** Learned words belong to a script, not to a language: Latin vs Cyrillic. */
+              private static boolean sameScript(String a, boolean latin) { return isLatin(a) == latin; }
+
+              synchronized List<String> suggest(String typed, int lang, int max) {
+                  ArrayList<String> out = new ArrayList<>();
+                  if (typed == null || typed.isEmpty()) return out;
+                  String p = norm(typed);
+                  boolean latin = isLatin(p);
+                  int primary, secondary;
+                  if (latin) { primary = EN; secondary = -1; }
+                  else {
+                      primary = (lang == RU) ? RU : UA;
+                      // Letters that exist only in one language decide which dictionary goes first
+                      if (p.matches(".*[іїєґ].*")) primary = UA;
+                      else if (p.matches(".*[ыэъ].*")) primary = RU;
+                      secondary = primary == UA ? RU : UA;
+                  }
+
+                  final Map<String, Double> score = new LinkedHashMap<>();
+                  final Map<String, String> show = new HashMap<>();
+                  Dict d1, d2;
+                  synchronized (dicts) { d1 = dicts[primary]; d2 = secondary >= 0 ? dicts[secondary] : null; }
+                  scan(d1, p, 1.0, score, show);
+                  if (d2 != null) scan(d2, p, 0.12, score, show);
+
+                  // my dictionary: always strong
+                  for (Map.Entry<String, String> e : userWords.entrySet()) {
+                      String w = e.getKey();
+                      if (!sameScript(w, latin)) continue;
+                      double kind = matchKind(p, w);
+                      if (kind <= 0) continue;
+                      double s = kind * 30000.0;
+                      Double old = score.get(w);
+                      if (old == null || old < s) score.put(w, s);
+                      show.put(w, e.getValue());
+                  }
+
+                  // personal words
+                  for (Map.Entry<String, Integer> e : learned.entrySet()) {
+                      String w = e.getKey();
+                      if (!sameScript(w, latin)) continue;
+                      int cnt = e.getValue();
+                      double kind = matchKind(p, w);
+                      if (kind <= 0) continue;
+                      boolean known = score.containsKey(w);
+                      if (!known && cnt < 2) continue;            // one-off typos are not suggested
+                      double boost = Math.min(250000, cnt * 6000.0) * kind;
+                      score.put(w, (known ? score.get(w) : 0) + boost);
+                      if (!show.containsKey(w)) show.put(w, w);
+                  }
+
+                  ArrayList<String> keys = new ArrayList<>(score.keySet());
+                  Collections.sort(keys, new Comparator<String>() {
+                      @Override public int compare(String a, String b) { return Double.compare(score.get(b), score.get(a)); }
+                  });
+                  for (String k : keys) {
+                      String disp = applyCase(typed, show.get(k));
+                      if (!out.contains(disp)) out.add(disp);
+                      if (out.size() >= max) break;
+                  }
+                  // The word that is already typed in full is not useful in the main (centre) slot
+                  if (out.size() > 1 && out.get(0).equalsIgnoreCase(typed) && norm(out.get(1)).startsWith(p)) {
+                      String first = out.remove(0);
+                      out.add(1, first);
+                  }
+                  return out;
+              }
+
+              private void scan(Dict d, String p, double weight, Map<String, Double> score, Map<String, String> show) {
+                  if (d == null) return;
+                  int n = d.words.length;
+                  for (int i = 0; i < n; i++) {
+                      String w = d.words[i];
+                      double kind = matchKind(p, w);
+                      if (kind <= 0) continue;
+                      double s = weight * kind * 1000000.0 / (i + 40);
+                      Double old = score.get(w);
+                      if (old == null || old < s) { score.put(w, s); show.put(w, d.display[i]); }
+                  }
+              }
+
+              /**
+               * 1.0  – the word starts with what was typed (completion / exact)
+               * 0.07 – one typo in the beginning of a longer word
+               * 0.16 – the whole word with one typo (substitution, extra/missing letter, swapped letters)
+               * 0    – no match
+               */
+              static double matchKind(String p, String w) {
+                  int lp = p.length(), lw = w.length();
+                  if (lw >= lp && w.startsWith(p)) return 1.0;
+                  if (lp >= 3 && Math.abs(lw - lp) <= 1 && within1(p, w)) return 0.16;
+                  if (lp >= 4 && lw > lp && within1(p, w.substring(0, lp))) return 0.07;
+                  return 0;
+              }
+
+              /** Damerau distance <= 1 */
+              static boolean within1(String a, String b) {
+                  int la = a.length(), lb = b.length();
+                  if (Math.abs(la - lb) > 1) return false;
+                  if (a.equals(b)) return true;
+                  if (a.charAt(0) != b.charAt(0) && !(la > 1 && lb > 1 && a.charAt(0) == b.charAt(1) && a.charAt(1) == b.charAt(0))) {
+                      // a typo in the very first letter is rare on a physical keyboard; only allow it for transpositions
+                      return false;
+                  }
+                  if (la == lb) {
+                      int i = 0;
+                      while (i < la && a.charAt(i) == b.charAt(i)) i++;
+                      if (i == la) return true;
+                      if (a.substring(i + 1).equals(b.substring(i + 1))) return true;                 // substitution
+                      return i + 1 < la && a.charAt(i) == b.charAt(i + 1) && a.charAt(i + 1) == b.charAt(i)
+                              && a.substring(i + 2).equals(b.substring(i + 2));                       // swap
+                  }
+                  String s = la < lb ? a : b, l = la < lb ? b : a;
+                  int i = 0;
+                  while (i < s.length() && s.charAt(i) == l.charAt(i)) i++;
+                  return s.substring(i).equals(l.substring(i + 1));                                 // insertion / deletion
+              }
+
+              /** "При" -> "Привет", "ПРИ" -> "ПРИВЕТ", "при" -> "привет" (names from the dictionary keep their capital). */
+              static String applyCase(String typed, String word) {
+                  if (word == null || word.isEmpty()) return word;
+                  int letters = 0, upper = 0;
+                  for (int i = 0; i < typed.length(); i++) {
+                      char c = typed.charAt(i);
+                      if (Character.isLetter(c)) { letters++; if (Character.isUpperCase(c)) upper++; }
+                  }
+                  if (letters >= 2 && upper == letters) return word.toUpperCase(Locale.ROOT);
+                  if (letters >= 1 && Character.isUpperCase(typed.charAt(0)))
+                      return word.substring(0, 1).toUpperCase(Locale.ROOT) + word.substring(1);
+                  return word;
+              }
+          }
+          EOF_TCK
+          cat > 'TitanCustomKeyboard/app/src/main/java/com/ievhenii/titankeyboard/TitanImeService.java' <<'EOF_TCK'
+          package com.ievhenii.titankeyboard;
+
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.content.res.ColorStateList;
+          import android.content.res.Configuration;
+          import android.graphics.Typeface;
+          import android.graphics.drawable.GradientDrawable;
+          import android.graphics.drawable.RippleDrawable;
+          import android.inputmethodservice.InputMethodService;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.text.InputType;
+          import android.text.TextUtils;
+          import android.util.TypedValue;
+          import android.view.Gravity;
+          import android.view.KeyEvent;
+          import android.view.View;
+          import android.view.inputmethod.EditorInfo;
+          import android.view.inputmethod.InputConnection;
+          import android.widget.LinearLayout;
+          import android.widget.TextView;
+          import android.widget.Toast;
+
+          import java.util.HashMap;
+          import java.util.List;
+          import java.util.Locale;
+          import java.util.Map;
+          import java.util.regex.Matcher;
+          import java.util.regex.Pattern;
+
+          public class TitanImeService extends InputMethodService {
+              private final Map<Integer, Long> down = new HashMap<>();
+              private SharedPreferences prefs;
+              private boolean alt = false, shiftLeft = false, shiftRight = false;
+              private boolean spaceCombo = false;   // Shift + Space was used for switching, swallow the space
+
+              private SuggestionEngine engine;
+              private LangBadge badge;
+
+              // suggestion bar
+              private LinearLayout candidateBar;
+              private final TextView[] slots = new TextView[3];
+              private final View[] dividers = new View[2];
+              private TextView langPill, hintView;
+              private LinearLayout slotsBox;
+              private boolean dark = false;
+              private boolean passwordField = false;
+              private String currentWord = "";
+              private static final class AddTag { final String word; AddTag(String w) { word = w; } }
+
+              private static final Pattern WORD_END = Pattern.compile("([\\p{L}][\\p{L}'’ʼ-]*)$");
+              private static final Pattern WORD_BEFORE_SEP = Pattern.compile("([\\p{L}][\\p{L}'’ʼ-]*[\\p{L}])[\\s.,!?;:()\\[\\]{}\"«»]$");
+
+              private final Handler repeatHandler = new Handler(Looper.getMainLooper());
+              private boolean deleteHeld = false;
+              private final Runnable deleteRepeat = new Runnable() {
+                  @Override public void run() {
+                      if (!deleteHeld) return;
+                      deleteOne();
+                      int interval = prefs == null ? 100 : prefs.getInt("deleteRepeatMs", 100);
+                      repeatHandler.postDelayed(this, Math.max(30, interval));
+                  }
+              };
+
+              @Override public void onCreate() {
+                  super.onCreate();
+                  prefs = getSharedPreferences("keyboard", MODE_PRIVATE);
+                  engine = new SuggestionEngine(this, prefs);
+                  badge = new LangBadge(this);
+              }
+
+              @Override public void onDestroy() {
+                  if (badge != null) badge.removeAll();
+                  super.onDestroy();
+              }
+
+              @Override public View onCreateInputView() { return new View(this); }
+              @Override public boolean onEvaluateInputViewShown() { return false; }
+              @Override public boolean onEvaluateFullscreenMode() { return false; }
+
+              // ------------------------------------------------------------------ UI
+              private int dp(float v) {
+                  return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics());
+              }
+
+              private int cBg()      { return dark ? 0xFF1B1E25 : 0xFFF4F6FA; }
+              private int cLine()    { return dark ? 0xFF2C313C : 0xFFDDE2EA; }
+              private int cText()    { return dark ? 0xFFEDEFF4 : 0xFF151B27; }
+              private int cSub()     { return dark ? 0xFFA3ABBA : 0xFF5A6374; }
+              private int cRipple()  { return dark ? 0x33FFFFFF : 0x22000000; }
+              private int cChip()    { return dark ? 0xFF262A33 : 0xFFFFFFFF; }
+
+              private RippleDrawable ripple(int fill, float radiusDp) {
+                  GradientDrawable content = new GradientDrawable();
+                  content.setColor(fill);
+                  content.setCornerRadius(dp(radiusDp));
+                  GradientDrawable mask = new GradientDrawable();
+                  mask.setColor(0xFFFFFFFF);
+                  mask.setCornerRadius(dp(radiusDp));
+                  return new RippleDrawable(ColorStateList.valueOf(cRipple()), content, mask);
+              }
+
+              @Override public View onCreateCandidatesView() {
+                  dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+
+                  LinearLayout outer = new LinearLayout(this);
+                  outer.setOrientation(LinearLayout.VERTICAL);
+                  outer.setBackgroundColor(cBg());
+                  View topLine = new View(this);
+                  topLine.setBackgroundColor(cLine());
+                  outer.addView(topLine, new LinearLayout.LayoutParams(-1, Math.max(1, dp(0.7f))));
+
+                  candidateBar = new LinearLayout(this);
+                  candidateBar.setOrientation(LinearLayout.HORIZONTAL);
+                  candidateBar.setGravity(Gravity.CENTER_VERTICAL);
+                  candidateBar.setPadding(dp(6), dp(4), dp(6), dp(4));
+                  outer.addView(candidateBar, new LinearLayout.LayoutParams(-1, dp(46)));
+
+                  slotsBox = new LinearLayout(this);
+                  slotsBox.setOrientation(LinearLayout.HORIZONTAL);
+                  slotsBox.setGravity(Gravity.CENTER_VERTICAL);
+                  candidateBar.addView(slotsBox, new LinearLayout.LayoutParams(0, -1, 1));
+
+                  // order on screen: [2nd] | [1st — bold, centre] | [3rd]
+                  for (int i = 0; i < 3; i++) {
+                      TextView t = new TextView(this);
+                      t.setGravity(Gravity.CENTER);
+                      t.setSingleLine(true);
+                      t.setEllipsize(TextUtils.TruncateAt.END);
+                      t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+                      t.setTextColor(cText());
+                      t.setPadding(dp(6), 0, dp(6), 0);
+                      t.setBackground(ripple(0x00000000, 10));
+                      slots[i] = t;
+                  }
+                  slots[0].setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+                  int[] order = {1, 0, 2};
+                  for (int k = 0; k < 3; k++) {
+                      LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -1, k == 1 ? 1.25f : 1f);
+                      slotsBox.addView(slots[order[k]], lp);
+                      if (k < 2) {
+                          View dv = new View(this);
+                          dv.setBackgroundColor(cLine());
+                          LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(Math.max(1, dp(1)), dp(22));
+                          slotsBox.addView(dv, dl);
+                          dividers[k] = dv;
+                      }
+                  }
+
+                  hintView = new TextView(this);
+                  hintView.setGravity(Gravity.CENTER);
+                  hintView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+                  hintView.setTextColor(cSub());
+                  hintView.setText("Shift + Пробел — смена языка");
+                  candidateBar.addView(hintView, 0, new LinearLayout.LayoutParams(0, -1, 1));
+
+                  langPill = new TextView(this);
+                  langPill.setGravity(Gravity.CENTER);
+                  langPill.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+                  langPill.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+                  langPill.setIncludeFontPadding(false);
+                  LinearLayout.LayoutParams pl = new LinearLayout.LayoutParams(dp(44), dp(30));
+                  pl.leftMargin = dp(6);
+                  candidateBar.addView(langPill, pl);
+                  langPill.setOnClickListener(new View.OnClickListener() {
+                      @Override public void onClick(View v) { switchLanguage(); }
+                  });
+                  langPill.setOnLongClickListener(new View.OnLongClickListener() {
+                      @Override public boolean onLongClick(View v) {
+                          Intent i = new Intent(TitanImeService.this, MainActivity.class);
+                          i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                          startActivity(i);
+                          return true;
+                      }
+                  });
+
+                  for (int i = 0; i < 3; i++) {
+                      final int idx = i;
+                      slots[i].setOnClickListener(new View.OnClickListener() {
+                          @Override public void onClick(View v) { pickSuggestion(idx); }
+                      });
+                      slots[i].setOnLongClickListener(new View.OnLongClickListener() {
+                          @Override public boolean onLongClick(View v) { return removeSuggestion(idx); }
+                      });
+                  }
+                  updatePill(false);
+                  return outer;
+              }
+
+              private int lang() { return LangBadge.clamp(prefs.getInt("language", 0)); }
+
+              private void updatePill(boolean pulse) {
+                  if (langPill == null) return;
+                  int l = lang();
+                  GradientDrawable bg = new GradientDrawable();
+                  bg.setColor(LangBadge.langColor(l));
+                  bg.setCornerRadius(dp(15));
+                  langPill.setBackground(new RippleDrawable(ColorStateList.valueOf(0x44FFFFFF), bg, null));
+                  langPill.setTextColor(LangBadge.langTextColor(l));
+                  langPill.setText(LangBadge.CODES[l]);
+                  if (pulse) {
+                      langPill.animate().cancel();
+                      langPill.setScaleX(1.25f);
+                      langPill.setScaleY(1.25f);
+                      langPill.animate().scaleX(1f).scaleY(1f).setDuration(220).start();
+                  }
+              }
+
+              @Override public void onStartInput(EditorInfo attribute, boolean restarting) {
+                  super.onStartInput(attribute, restarting);
+                  int cls = attribute == null ? 0 : attribute.inputType & InputType.TYPE_MASK_CLASS;
+                  int var = attribute == null ? 0 : attribute.inputType & InputType.TYPE_MASK_VARIATION;
+                  passwordField = cls == InputType.TYPE_CLASS_TEXT && (var == InputType.TYPE_TEXT_VARIATION_PASSWORD
+                          || var == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD || var == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD)
+                          || cls == InputType.TYPE_CLASS_NUMBER && var == InputType.TYPE_NUMBER_VARIATION_PASSWORD;
+                  if (!restarting && engine != null) engine.reloadLearned();   // picks up imported profiles
+                  setCandidatesViewShown(true);
+                  updatePill(false);
+                  refreshSuggestions();
+              }
+
+              @Override public void onUpdateSelection(int oldSelStart, int oldSelEnd, int newSelStart, int newSelEnd,
+                                                      int candidatesStart, int candidatesEnd) {
+                  super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd);
+                  refreshSuggestions();
+              }
+
+              // ------------------------------------------------------------------ keys
+              @Override public boolean onKeyDown(int code, KeyEvent e) {
+                  if (code == KeyEvent.KEYCODE_DEL) {
+                      if (e.getRepeatCount() == 0 && !deleteHeld) {
+                          deleteHeld = true;
+                          deleteOne();
+                          int interval = prefs.getInt("deleteRepeatMs", 100);
+                          repeatHandler.postDelayed(deleteRepeat, Math.max(30, interval));
+                      }
+                      return true;
+                  }
+                  if (code == KeyEvent.KEYCODE_ALT_LEFT || code == KeyEvent.KEYCODE_ALT_RIGHT) { alt = true; return true; }
+                  if (code == KeyEvent.KEYCODE_SHIFT_LEFT) { shiftLeft = true; return true; }
+                  if (code == KeyEvent.KEYCODE_SHIFT_RIGHT) { shiftRight = true; return true; }
+                  // SHIFT + SPACE — next language (the space itself is not typed)
+                  if (code == KeyEvent.KEYCODE_SPACE && (shiftLeft || shiftRight || e.isShiftPressed())) {
+                      if (e.getRepeatCount() == 0) { spaceCombo = true; switchLanguage(); }
+                      return true;
+                  }
+                  if (isMapped(code)) { if (e.getRepeatCount() == 0) down.put(code, System.currentTimeMillis()); return true; }
+                  return super.onKeyDown(code, e);
+              }
+
+              @Override public boolean onKeyUp(int code, KeyEvent e) {
+                  if (code == KeyEvent.KEYCODE_DEL) {
+                      deleteHeld = false;
+                      repeatHandler.removeCallbacks(deleteRepeat);
+                      return true;
+                  }
+                  if (code == KeyEvent.KEYCODE_ALT_LEFT || code == KeyEvent.KEYCODE_ALT_RIGHT) { alt = false; return true; }
+                  if (code == KeyEvent.KEYCODE_SHIFT_LEFT) { shiftLeft = false; return true; }
+                  if (code == KeyEvent.KEYCODE_SHIFT_RIGHT) { shiftRight = false; return true; }
+                  if (code == KeyEvent.KEYCODE_SPACE && spaceCombo) { spaceCombo = false; down.remove(code); return true; }
+                  if (!isMapped(code)) return super.onKeyUp(code, e);
+                  Long start = down.remove(code);
+                  long ms = start == null ? 0 : System.currentTimeMillis() - start;
+                  boolean useAlt = alt || e.isAltPressed(), useShift = shiftLeft || shiftRight || e.isShiftPressed();
+                  if (code == KeyEvent.KEYCODE_ENTER) { handleEnter(useShift); return true; }
+                  int t1 = prefs.getInt("hold500", 500), t2 = prefs.getInt("hold1000", 1000);
+                  String out = null;
+                  if (t2 > 0 && ms >= t2) out = value(code, "hold1000");
+                  else if (t1 > 0 && ms >= t1) out = value(code, "hold500");
+                  if (out == null || out.isEmpty()) {
+                      if (useAlt) {
+                          out = value(code, "alt");
+                          if (out == null || out.isEmpty()) out = altLegend(code);
+                      } else {
+                          out = value(code, "tap");
+                      }
+                  }
+                  if (out == null || out.isEmpty()) out = defaultValue(code);
+                  if (useShift && out != null && !out.isEmpty()) out = out.toUpperCase(Locale.ROOT);
+                  if (out != null && !out.isEmpty()) commit(out);
+                  return true;
+              }
+
+              private void switchLanguage() {
+                  int next = (lang() + 1) % 3;   // Українська -> Русский -> English -> Українська
+                  prefs.edit().putInt("language", next).apply();
+                  updatePill(true);
+                  if (badge != null) badge.show(next, candidateBar);
+                  refreshSuggestions();
+              }
+
+              private String value(int code, String layer) {
+                  String saved = prefs.getString("key_" + code + "_" + layer, "");
+                  if (saved != null && !saved.isEmpty()) return saved;
+                  if (code == KeyEvent.KEYCODE_U && layer.equals("alt")) return "_";
+                  if (code == KeyEvent.KEYCODE_L && layer.equals("hold500")) return "Ж";
+                  if (code == KeyEvent.KEYCODE_M && layer.equals("hold500")) return "ь";
+                  if (code == KeyEvent.KEYCODE_S && layer.equals("hold500")) return "ы";
+                  if (layer.equals("hold1000")) {
+                      switch (code) {
+                          case KeyEvent.KEYCODE_Q: return "0"; case KeyEvent.KEYCODE_R: return "3";
+                          case KeyEvent.KEYCODE_S: return "4"; case KeyEvent.KEYCODE_W: return "1";
+                          case KeyEvent.KEYCODE_X: return "8"; case KeyEvent.KEYCODE_Z: return "7";
+                          case KeyEvent.KEYCODE_C: return "9"; case KeyEvent.KEYCODE_D: return "5";
+                          case KeyEvent.KEYCODE_E: return "2"; case KeyEvent.KEYCODE_F: return "6";
+                      }
+                  }
+                  return "";
+              }
+
+              private void handleEnter(boolean shifted) {
+                  InputConnection ic = getCurrentInputConnection();
+                  if (ic == null) return;
+                  learnWordBeforeCursor("");
+                  if (shifted) { ic.commitText("\n", 1); return; }
+                  EditorInfo info = getCurrentInputEditorInfo();
+                  if (info != null && info.actionId != 0) { ic.performEditorAction(info.actionId); return; }
+                  int action = info == null ? EditorInfo.IME_ACTION_NONE : info.imeOptions & EditorInfo.IME_MASK_ACTION;
+                  if (action != EditorInfo.IME_ACTION_NONE && action != EditorInfo.IME_ACTION_UNSPECIFIED) ic.performEditorAction(action);
+                  else ic.commitText("\n", 1);
+              }
+
+              private void commit(String s) {
+                  InputConnection ic = getCurrentInputConnection();
+                  if (ic != null) {
+                      ic.commitText(s, 1);
+                      if (s.matches(".*[\\s.,!?;:()\\[\\]{}\"«»].*")) learnWordBeforeCursor(s);
+                      refreshSuggestions();
+                  }
+              }
+
+              /** After a space / punctuation the finished word is remembered (gets priority next time). */
+              private void learnWordBeforeCursor(String justTyped) {
+                  if (passwordField || engine == null) return;
+                  InputConnection ic = getCurrentInputConnection();
+                  if (ic == null) return;
+                  CharSequence q = ic.getTextBeforeCursor(64, 0);
+                  if (q == null) return;
+                  String before = q.toString();
+                  if (justTyped.isEmpty()) before = before + " ";
+                  Matcher m = WORD_BEFORE_SEP.matcher(before);
+                  if (m.find()) engine.learn(m.group(1), 1);
+              }
+
+              // ------------------------------------------------------------------ suggestions
+              private String wordBeforeCursor() {
+                  InputConnection ic = getCurrentInputConnection();
+                  if (ic == null) return "";
+                  CharSequence q = ic.getTextBeforeCursor(48, 0);
+                  if (q == null) return "";
+                  Matcher m = WORD_END.matcher(q);
+                  return m.find() ? m.group(1) : "";
+              }
+
+              private void refreshSuggestions() {
+                  if (candidateBar == null) return;
+                  currentWord = passwordField ? "" : wordBeforeCursor();
+                  List<String> res = currentWord.isEmpty() || engine == null
+                          ? java.util.Collections.<String>emptyList()
+                          : engine.suggest(currentWord, lang(), 3);
+                  // Word is in no dictionary -> offer "+ word" in the right slot (one tap adds it to My dictionary)
+                  String addWord = null;
+                  if (!passwordField && engine != null && engine.dictsLoaded()) {
+                      String clean = SuggestionEngine.cleanWord(currentWord);
+                      if (clean != null && clean.equals(currentWord) && !engine.isKnown(clean)) addWord = clean;
+                  }
+                  if (addWord != null && res.size() > 2) res = new java.util.ArrayList<>(res.subList(0, 2));
+                  boolean any = !res.isEmpty() || addWord != null;
+                  hintView.setVisibility(any ? View.GONE : View.VISIBLE);
+                  hintView.setText(passwordField ? "Подсказки выключены в поле пароля" : "Shift + Пробел — смена языка");
+                  slotsBox.setVisibility(any ? View.VISIBLE : View.GONE);
+                  for (int i = 0; i < 3; i++) {
+                      if (i < res.size()) {
+                          slots[i].setText(res.get(i));
+                          slots[i].setTag(res.get(i));
+                          slots[i].setEnabled(true);
+                          slots[i].setTextColor(i == 0 ? cText() : cSub());
+                      } else {
+                          slots[i].setText("");
+                          slots[i].setTag(null);
+                          slots[i].setEnabled(false);
+                      }
+                  }
+                  // the top suggestion is highlighted as a soft chip
+                  slots[0].setBackground(res.isEmpty() ? ripple(0x00000000, 10) : ripple(cChip(), 10));
+                  slots[2].setBackground(ripple(0x00000000, 10));
+                  if (addWord != null) {
+                      slots[2].setText("+ " + addWord);
+                      slots[2].setTag(new AddTag(addWord));
+                      slots[2].setEnabled(true);
+                      slots[2].setTextColor(dark ? 0xFF8AB4FF : LangBadge.langColor(lang()));
+                      slots[2].setBackground(outlineChip(dark ? 0xFF8AB4FF : LangBadge.langColor(lang())));
+                  }
+                  int filled = res.size() + (addWord != null ? 1 : 0);
+                  for (View dv : dividers) if (dv != null) dv.setVisibility(filled > 1 && addWord == null ? View.VISIBLE : View.INVISIBLE);
+                  setCandidatesViewShown(true);
+              }
+
+              private RippleDrawable outlineChip(int color) {
+                  GradientDrawable content = new GradientDrawable();
+                  content.setColor((color & 0x00FFFFFF) | 0x14000000);
+                  content.setStroke(Math.max(1, dp(1.2f)), color);
+                  content.setCornerRadius(dp(10));
+                  GradientDrawable mask = new GradientDrawable();
+                  mask.setColor(0xFFFFFFFF);
+                  mask.setCornerRadius(dp(10));
+                  return new RippleDrawable(ColorStateList.valueOf(cRipple()), content, mask);
+              }
+
+              private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
+
+              /** Long press on a suggestion removes it from My dictionary / learned words. */
+              private boolean removeSuggestion(int idx) {
+                  Object tag = slots[idx].getTag();
+                  if (!(tag instanceof String) || engine == null) return false;
+                  String w = (String) tag;
+                  if (engine.isUserWord(w)) { engine.removeUserWord(w); engine.forget(w); toast("«" + w + "» удалено из моего словаря"); }
+                  else if (engine.isLearned(w)) { engine.forget(w); toast("«" + w + "» больше не будет подниматься"); }
+                  else { toast("Это слово из встроенного словаря"); return true; }
+                  refreshSuggestions();
+                  return true;
+              }
+
+              private void pickSuggestion(int idx) {
+                  Object tag = slots[idx].getTag();
+                  if (tag instanceof AddTag) {
+                      String w = ((AddTag) tag).word;
+                      if (engine != null && engine.addUserWord(w)) toast("«" + w + "» добавлено в мой словарь");
+                      refreshSuggestions();
+                      return;
+                  }
+                  if (!(tag instanceof String)) return;
+                  String word = (String) tag;
+                  InputConnection ic = getCurrentInputConnection();
+                  if (ic == null) return;
+                  String typed = wordBeforeCursor();
+                  CharSequence after = ic.getTextAfterCursor(1, 0);
+                  boolean spaceAfter = after != null && after.length() > 0 && Character.isWhitespace(after.charAt(0));
+                  ic.beginBatchEdit();
+                  if (!typed.isEmpty()) ic.deleteSurroundingText(typed.length(), 0);
+                  ic.commitText(spaceAfter ? word : word + " ", 1);
+                  ic.endBatchEdit();
+                  engine.learn(word, 3);
+                  refreshSuggestions();
+              }
+
+              private void deleteOne() {
+                  InputConnection ic = getCurrentInputConnection();
+                  if (ic != null) {
+                      CharSequence sel = ic.getSelectedText(0);
+                      if (sel != null && sel.length() > 0) ic.commitText("", 1);
+                      else ic.deleteSurroundingText(1, 0);
+                  }
+                  refreshSuggestions();
+              }
+
+              @Override public void onFinishInput() {
+                  deleteHeld = false;
+                  repeatHandler.removeCallbacks(deleteRepeat);
+                  super.onFinishInput();
+              }
+
+              private boolean isMapped(int k) {
+                  return (k >= KeyEvent.KEYCODE_A && k <= KeyEvent.KEYCODE_Z) || k == KeyEvent.KEYCODE_SPACE
+                          || k == KeyEvent.KEYCODE_SYM || k == KeyEvent.KEYCODE_ENTER || k == KeyEvent.KEYCODE_DEL;
+              }
+
+              private String defaultValue(int code) {
+                  if (code == KeyEvent.KEYCODE_SPACE) return " ";
+                  if (code == KeyEvent.KEYCODE_SYM) return "ю";
+                  if (code >= KeyEvent.KEYCODE_A && code <= KeyEvent.KEYCODE_Z) {
+                      char en = (char) ('a' + code - KeyEvent.KEYCODE_A);
+                      int lang = prefs.getInt("language", 0);
+                      if (lang == 2) return String.valueOf(en);
+                      String keys = "qwertyuiopasdfghjklzxcvbnm", ua = "йцукенгшщзфівапролдячсмить", ru = "йцукенгшщзфывапролдячсмить";
+                      int i = keys.indexOf(en);
+                      String m = lang == 0 ? ua : ru;
+                      return i >= 0 && i < m.length() ? String.valueOf(m.charAt(i)) : String.valueOf(en);
+                  }
+                  return "";
+              }
+
+              private String altLegend(int code) {
+                  if (code < KeyEvent.KEYCODE_A || code > KeyEvent.KEYCODE_Z) return null;
+                  char c = (char) ('a' + code - KeyEvent.KEYCODE_A);
+                  switch (c) {
+                      case 'q': return "0"; case 'w': return "1"; case 'e': return "2"; case 'r': return "3";
+                      case 't': return "("; case 'y': return ")"; case 'u': return "_"; case 'i': return null;
+                      case 'o': return "+"; case 'p': return "0"; case 'a': return "*"; case 's': return "4";
+                      case 'd': return "5"; case 'f': return "6"; case 'g': return "/"; case 'h': return ":";
+                      case 'j': return "#"; case 'k': return "'"; case 'l': return "\""; case 'z': return "7";
+                      case 'x': return "8"; case 'c': return "9"; case 'v': return "?"; case 'b': return "!";
+                      case 'n': return ","; case 'm': return ".";
+                  }
+                  return null;
+              }
+          }
+          EOF_TCK
+          cat > 'TitanCustomKeyboard/app/src/main/assets/dict_en.txt' <<'EOF_TCK'
+          # frequency order, one word per line
+          the
+          be
+          to
+          of
+          and
+          in
+          that
+          have
+          I
+          it
+          for
+          not
+          on
+          with
+          he
+          as
+          you
+          do
+          at
+          this
+          but
+          his
+          by
+          from
+          they
+          we
+          say
+          her
+          she
+          or
+          an
+          will
+          my
+          one
+          all
+          would
+          there
+          their
+          what
+          so
+          up
+          out
+          if
+          about
+          who
+          get
+          which
+          go
+          me
+          when
+          make
+          can
+          like
+          time
+          no
+          just
+          him
+          know
+          take
+          people
+          into
+          year
+          your
+          good
+          some
+          could
+          them
+          see
+          other
+          than
+          then
+          now
+          look
+          only
+          come
+          its
+          over
+          think
+          also
+          back
+          after
+          use
+          two
+          how
+          our
+          work
+          first
+          well
+          way
+          even
+          new
+          want
+          because
+          any
+          these
+          give
+          day
+          most
+          us
+          is
+          are
+          was
+          were
+          been
+          has
+          had
+          did
+          does
+          doing
+          done
+          said
+          says
+          going
+          went
+          gone
+          got
+          getting
+          made
+          making
+          hi
+          hello
+          hey
+          thanks
+          thank
+          please
+          sorry
+          okay
+          ok
+          yes
+          yeah
+          yep
+          nope
+          sure
+          great
+          cool
+          nice
+          awesome
+          perfect
+          fine
+          bye
+          goodbye
+          morning
+          evening
+          night
+          tonight
+          today
+          tomorrow
+          yesterday
+          later
+          soon
+          I'm
+          you're
+          he's
+          she's
+          it's
+          we're
+          they're
+          I've
+          you've
+          we've
+          I'll
+          you'll
+          we'll
+          it'll
+          I'd
+          you'd
+          don't
+          doesn't
+          didn't
+          can't
+          couldn't
+          won't
+          wouldn't
+          shouldn't
+          isn't
+          aren't
+          wasn't
+          weren't
+          haven't
+          hasn't
+          hadn't
+          let's
+          that's
+          there's
+          what's
+          where's
+          who's
+          how's
+          man
+          woman
+          child
+          children
+          world
+          life
+          hand
+          part
+          place
+          case
+          week
+          company
+          system
+          program
+          question
+          government
+          number
+          point
+          home
+          water
+          room
+          mother
+          area
+          money
+          story
+          fact
+          month
+          lot
+          right
+          study
+          book
+          eye
+          job
+          word
+          business
+          issue
+          side
+          kind
+          head
+          house
+          service
+          friend
+          father
+          power
+          hour
+          game
+          line
+          end
+          member
+          law
+          car
+          city
+          community
+          name
+          president
+          team
+          minute
+          idea
+          kid
+          body
+          information
+          school
+          face
+          others
+          level
+          office
+          door
+          health
+          person
+          art
+          war
+          history
+          party
+          result
+          change
+          reason
+          research
+          girl
+          guy
+          moment
+          air
+          teacher
+          force
+          education
+          foot
+          boy
+          age
+          policy
+          process
+          music
+          market
+          sense
+          nation
+          plan
+          college
+          interest
+          death
+          experience
+          effect
+          class
+          control
+          care
+          field
+          development
+          role
+          effort
+          rate
+          heart
+          drug
+          show
+          leader
+          light
+          voice
+          wife
+          police
+          mind
+          price
+          report
+          decision
+          son
+          view
+          relationship
+          town
+          road
+          arm
+          difference
+          value
+          building
+          action
+          model
+          season
+          society
+          tax
+          director
+          position
+          player
+          record
+          paper
+          space
+          ground
+          form
+          event
+          official
+          matter
+          center
+          couple
+          site
+          project
+          activity
+          star
+          table
+          need
+          court
+          oil
+          situation
+          cost
+          industry
+          figure
+          street
+          image
+          phone
+          data
+          picture
+          practice
+          piece
+          land
+          product
+          doctor
+          wall
+          patient
+          worker
+          news
+          test
+          movie
+          north
+          love
+          support
+          technology
+          step
+          baby
+          computer
+          type
+          attention
+          film
+          tree
+          source
+          organization
+          hair
+          window
+          evidence
+          population
+          truth
+          song
+          message
+          messages
+          text
+          email
+          mail
+          chat
+          call
+          video
+          photo
+          link
+          app
+          website
+          page
+          file
+          files
+          password
+          account
+          login
+          keyboard
+          screen
+          button
+          settings
+          layout
+          language
+          internet
+          online
+          offline
+          download
+          upload
+          update
+          version
+          battery
+          charger
+          laptop
+          find
+          tell
+          ask
+          seem
+          feel
+          try
+          leave
+          keep
+          let
+          begin
+          help
+          talk
+          turn
+          start
+          hear
+          play
+          run
+          move
+          live
+          believe
+          hold
+          bring
+          happen
+          write
+          provide
+          sit
+          stand
+          lose
+          pay
+          meet
+          include
+          continue
+          set
+          learn
+          lead
+          understand
+          watch
+          follow
+          stop
+          create
+          speak
+          read
+          allow
+          add
+          spend
+          grow
+          open
+          walk
+          win
+          offer
+          remember
+          consider
+          appear
+          buy
+          wait
+          serve
+          die
+          send
+          expect
+          build
+          stay
+          fall
+          cut
+          reach
+          kill
+          remain
+          suggest
+          raise
+          pass
+          sell
+          require
+          decide
+          pull
+          check
+          eat
+          drink
+          sleep
+          drive
+          fly
+          travel
+          order
+          cook
+          clean
+          fix
+          share
+          save
+          delete
+          close
+          finish
+          goes
+          comes
+          gets
+          makes
+          knows
+          thinks
+          takes
+          sees
+          looks
+          wants
+          gives
+          uses
+          finds
+          tells
+          asks
+          works
+          feels
+          tries
+          leaves
+          calls
+          keeps
+          lets
+          helps
+          talks
+          turns
+          starts
+          shows
+          hears
+          plays
+          runs
+          moves
+          likes
+          lives
+          needs
+          means
+          came
+          took
+          saw
+          looked
+          wanted
+          gave
+          used
+          found
+          told
+          asked
+          worked
+          felt
+          tried
+          left
+          called
+          kept
+          helped
+          talked
+          turned
+          started
+          showed
+          heard
+          played
+          ran
+          moved
+          liked
+          lived
+          needed
+          meant
+          thought
+          knew
+          bought
+          brought
+          sent
+          paid
+          met
+          wrote
+          sat
+          stood
+          lost
+          won
+          spent
+          built
+          began
+          coming
+          taking
+          seeing
+          looking
+          wanting
+          giving
+          using
+          finding
+          telling
+          asking
+          working
+          feeling
+          trying
+          leaving
+          calling
+          keeping
+          helping
+          talking
+          starting
+          showing
+          playing
+          running
+          moving
+          living
+          waiting
+          thinking
+          buying
+          sending
+          paying
+          meeting
+          writing
+          reading
+          sitting
+          eating
+          drinking
+          sleeping
+          driving
+          last
+          long
+          little
+          own
+          old
+          big
+          high
+          different
+          small
+          large
+          next
+          early
+          young
+          important
+          few
+          public
+          bad
+          same
+          able
+          best
+          better
+          free
+          real
+          full
+          special
+          easy
+          clear
+          recent
+          certain
+          personal
+          red
+          difficult
+          available
+          likely
+          short
+          single
+          medical
+          current
+          wrong
+          private
+          past
+          foreign
+          common
+          poor
+          natural
+          significant
+          similar
+          hot
+          dead
+          central
+          happy
+          serious
+          ready
+          simple
+          physical
+          general
+          environmental
+          financial
+          blue
+          democratic
+          dark
+          various
+          entire
+          legal
+          religious
+          cold
+          final
+          main
+          green
+          huge
+          popular
+          traditional
+          cultural
+          expensive
+          cheap
+          busy
+          beautiful
+          amazing
+          interesting
+          funny
+          tired
+          hungry
+          glad
+          very
+          really
+          still
+          never
+          always
+          often
+          sometimes
+          usually
+          already
+          again
+          too
+          maybe
+          probably
+          actually
+          quite
+          almost
+          enough
+          together
+          away
+          here
+          where
+          why
+          whose
+          whom
+          everywhere
+          somewhere
+          anywhere
+          nowhere
+          everything
+          something
+          anything
+          nothing
+          everyone
+          someone
+          anyone
+          nobody
+          each
+          every
+          both
+          either
+          neither
+          much
+          many
+          more
+          less
+          least
+          although
+          though
+          while
+          until
+          unless
+          since
+          whether
+          before
+          during
+          without
+          within
+          between
+          through
+          across
+          against
+          among
+          around
+          above
+          below
+          under
+          onto
+          monday
+          tuesday
+          wednesday
+          thursday
+          friday
+          saturday
+          sunday
+          weekend
+          january
+          february
+          march
+          april
+          may
+          june
+          july
+          august
+          september
+          october
+          november
+          december
+          three
+          four
+          five
+          six
+          seven
+          eight
+          nine
+          ten
+          eleven
+          twelve
+          twenty
+          thirty
+          hundred
+          thousand
+          million
+          second
+          third
+          half
+          payment
+          card
+          bank
+          cash
+          transfer
+          discount
+          delivery
+          shop
+          store
+          restaurant
+          cafe
+          bar
+          hotel
+          airport
+          ticket
+          taxi
+          bike
+          scooter
+          rent
+          beach
+          sea
+          island
+          pool
+          near
+          far
+          straight
+          address
+          map
+          food
+          breakfast
+          lunch
+          dinner
+          coffee
+          tea
+          beer
+          wine
+          juice
+          milk
+          bread
+          meat
+          chicken
+          fish
+          rice
+          fruit
+          soup
+          salad
+          delicious
+          family
+          mom
+          dad
+          daughter
+          brother
+          sister
+          husband
+          grandma
+          grandpa
+          kids
+          friends
+          girlfriend
+          boyfriend
+          honey
+          dear
+          hospital
+          pharmacy
+          medicine
+          sick
+          weather
+          warm
+          rain
+          sun
+          wind
+          client
+          clients
+          contract
+          documents
+          marketing
+          sales
+          seo
+          traffic
+          keywords
+          ranking
+          content
+          campaign
+          budget
+          analytics
+          conversion
+          landing
+          domain
+          hosting
+          server
+          code
+          design
+          thailand
+          phuket
+          patong
+          bangkok
+          pattaya
+          ukraine
+          kyiv
+          problem
+          welcome
+          luck
+          birthday
+          congratulations
+          course
+          example
+          anyway
+          basically
+          honestly
+          seriously
+          exactly
+          especially
+          EOF_TCK
+          cat > 'TitanCustomKeyboard/app/src/main/assets/dict_ru.txt' <<'EOF_TCK'
+          # frequency order, one word per line
+          не
+          на
+          что
+          он
+          как
+          то
+          это
+          все
+          она
+          так
+          его
+          но
+          да
+          ты
+          же
+          вы
+          за
+          бы
+          по
+          только
+          ее
+          мне
+          было
+          вот
+          от
+          меня
+          еще
+          нет
+          из
+          ему
+          теперь
+          когда
+          даже
+          ну
+          вдруг
+          ли
+          если
+          уже
+          или
+          ни
+          быть
+          был
+          него
+          до
+          вас
+          нибудь
+          опять
+          уж
+          вам
+          ведь
+          там
+          потом
+          себя
+          ничего
+          ей
+          может
+          они
+          тут
+          где
+          есть
+          надо
+          ней
+          для
+          мы
+          тебя
+          их
+          чем
+          была
+          сам
+          чтоб
+          без
+          будто
+          чего
+          раз
+          тоже
+          себе
+          под
+          будет
+          тогда
+          кто
+          этот
+          того
+          потому
+          этого
+          какой
+          совсем
+          ним
+          здесь
+          этом
+          один
+          почти
+          мой
+          тем
+          чтобы
+          нее
+          сейчас
+          были
+          куда
+          зачем
+          всех
+          никогда
+          можно
+          при
+          наконец
+          два
+          об
+          другой
+          хоть
+          после
+          над
+          больше
+          тот
+          через
+          эти
+          нас
+          про
+          всего
+          них
+          какая
+          много
+          разве
+          три
+          эту
+          моя
+          впрочем
+          хорошо
+          свою
+          этой
+          перед
+          иногда
+          лучше
+          чуть
+          том
+          нельзя
+          такой
+          им
+          более
+          всегда
+          конечно
+          всю
+          между
+          привет
+          здравствуйте
+          спасибо
+          пожалуйста
+          отлично
+          ладно
+          давай
+          давайте
+          окей
+          ок
+          пока
+          свидания
+          доброе
+          утро
+          добрый
+          день
+          вечер
+          ночи
+          спокойной
+          извини
+          извините
+          прости
+          простите
+          возможно
+          наверное
+          точно
+          правда
+          понятно
+          ясно
+          согласен
+          согласна
+          человек
+          время
+          год
+          жизнь
+          рука
+          работа
+          слово
+          место
+          лицо
+          друг
+          глаз
+          вопрос
+          дом
+          сторона
+          страна
+          мир
+          случай
+          голова
+          ребенок
+          сила
+          конец
+          вид
+          система
+          часть
+          город
+          отношение
+          женщина
+          деньги
+          земля
+          машина
+          вода
+          отец
+          проблема
+          час
+          право
+          нога
+          решение
+          дверь
+          образ
+          история
+          власть
+          закон
+          война
+          бог
+          голос
+          тысяча
+          книга
+          возможность
+          результат
+          ночь
+          стол
+          имя
+          область
+          статья
+          число
+          компания
+          народ
+          жена
+          группа
+          развитие
+          процесс
+          суд
+          условие
+          средство
+          начало
+          свет
+          пора
+          путь
+          душа
+          уровень
+          форма
+          связь
+          минута
+          улица
+          качество
+          мысль
+          дорога
+          мать
+          действие
+          месяц
+          государство
+          язык
+          любовь
+          взгляд
+          мама
+          век
+          школа
+          цель
+          общество
+          деятельность
+          организация
+          президент
+          комната
+          порядок
+          момент
+          театр
+          письмо
+          помощь
+          ситуация
+          роль
+          рубль
+          смысл
+          состояние
+          квартира
+          орган
+          внимание
+          тело
+          труд
+          сын
+          мера
+          смерть
+          рынок
+          программа
+          задача
+          предприятие
+          окно
+          разговор
+          правительство
+          семья
+          производство
+          информация
+          положение
+          центр
+          ответ
+          муж
+          автор
+          стена
+          интерес
+          федерация
+          правило
+          управление
+          мужчина
+          идея
+          партия
+          совет
+          счет
+          сердце
+          движение
+          вещь
+          материал
+          неделя
+          чувство
+          глава
+          наука
+          ряд
+          газета
+          причина
+          плечо
+          цена
+          план
+          речь
+          точка
+          основа
+          товарищ
+          культура
+          данные
+          мнение
+          документ
+          институт
+          брат
+          дух
+          сумма
+          вариант
+          номер
+          телефон
+          сообщение
+          сообщения
+          чат
+          фото
+          фотографию
+          видео
+          ссылка
+          ссылку
+          интернет
+          приложение
+          компьютер
+          ноутбук
+          клавиатура
+          клавиатуру
+          экран
+          кнопка
+          кнопку
+          файл
+          файлы
+          пароль
+          почта
+          почту
+          адрес
+          настройки
+          раскладка
+          текст
+          слова
+          звонок
+          звонить
+          позвонить
+          позвони
+          перезвони
+          напиши
+          написать
+          напишу
+          пишу
+          прочитал
+          прочитала
+          отправь
+          отправить
+          отправил
+          отправила
+          получил
+          получила
+          скинь
+          скинуть
+          скину
+          мочь
+          сказать
+          говорить
+          знать
+          стать
+          хотеть
+          видеть
+          получить
+          идти
+          думать
+          сделать
+          делать
+          понимать
+          понять
+          дать
+          стоять
+          жить
+          пойти
+          работать
+          смотреть
+          взять
+          сидеть
+          найти
+          оставаться
+          остаться
+          прийти
+          любить
+          ждать
+          писать
+          читать
+          искать
+          купить
+          продать
+          платить
+          заплатить
+          спросить
+          спрашивать
+          ответить
+          помочь
+          помогать
+          начать
+          начинать
+          кончить
+          закончить
+          решить
+          узнать
+          вернуться
+          вернуть
+          показать
+          показывать
+          попробовать
+          пробовать
+          слушать
+          слышать
+          ехать
+          поехать
+          приехать
+          уехать
+          выйти
+          войти
+          встретить
+          встретиться
+          отдыхать
+          спать
+          пить
+          готовить
+          учить
+          учиться
+          играть
+          хочу
+          хочешь
+          хочет
+          хотим
+          хотите
+          хотят
+          хотел
+          хотела
+          хотели
+          хотелось
+          могу
+          можешь
+          можем
+          можете
+          могут
+          мог
+          могла
+          могли
+          знаю
+          знаешь
+          знает
+          знаем
+          знаете
+          знают
+          знал
+          знала
+          знали
+          думаю
+          думаешь
+          думает
+          думаем
+          думаете
+          думают
+          думал
+          думала
+          думали
+          делаю
+          делаешь
+          делает
+          делаем
+          делаете
+          делают
+          делал
+          делала
+          делали
+          говорю
+          говоришь
+          говорит
+          говорим
+          говорите
+          говорят
+          говорил
+          говорила
+          говорили
+          сказал
+          сказала
+          сказали
+          скажу
+          скажешь
+          скажет
+          скажи
+          скажите
+          иду
+          идешь
+          идет
+          идем
+          идете
+          идут
+          шел
+          шла
+          шли
+          пошел
+          пошла
+          пошли
+          пойду
+          пойдешь
+          пойдем
+          пойдемте
+          буду
+          будешь
+          будем
+          будете
+          будут
+          вижу
+          видишь
+          видит
+          видим
+          видите
+          видят
+          видел
+          видела
+          видели
+          понимаю
+          понимаешь
+          понимает
+          понимаем
+          понимаете
+          понимают
+          понял
+          поняла
+          поняли
+          пойму
+          работаю
+          работаешь
+          работает
+          работаем
+          работаете
+          работают
+          работал
+          работала
+          работали
+          живу
+          живешь
+          живет
+          живем
+          живете
+          живут
+          жил
+          жила
+          жили
+          сделаю
+          сделаешь
+          сделает
+          сделаем
+          сделаете
+          сделают
+          сделал
+          сделала
+          сделали
+          сделай
+          сделайте
+          жду
+          ждешь
+          ждет
+          ждем
+          ждете
+          ждут
+          ждал
+          ждала
+          ждали
+          жди
+          ждите
+          люблю
+          любишь
+          любит
+          любим
+          любите
+          любят
+          любил
+          любила
+          смотрю
+          смотришь
+          смотрит
+          смотрим
+          смотрите
+          смотрят
+          смотрел
+          смотрела
+          посмотри
+          посмотрю
+          посмотрим
+          пишешь
+          пишет
+          пишем
+          пишете
+          пишут
+          писал
+          писала
+          приду
+          придешь
+          придет
+          придем
+          придете
+          придут
+          пришел
+          пришла
+          пришли
+          приходи
+          еду
+          едешь
+          едет
+          едем
+          едете
+          едут
+          ехал
+          ехала
+          поеду
+          поедем
+          поехали
+          приеду
+          приехал
+          приехала
+          нужно
+          нужен
+          нужна
+          нужны
+          необходимо
+          стоит
+          дай
+          дайте
+          дам
+          дашь
+          даст
+          дадим
+          дал
+          дала
+          дали
+          возьми
+          возьмите
+          возьму
+          взял
+          взяла
+          взяли
+          купи
+          куплю
+          купил
+          купила
+          купили
+          покупать
+          помоги
+          помогите
+          помогу
+          помог
+          помогла
+          напомни
+          напомню
+          подожди
+          подождите
+          погоди
+          очень
+          мало
+          немного
+          также
+          сразу
+          скоро
+          поздно
+          рано
+          быстро
+          медленно
+          долго
+          недолго
+          вместе
+          отдельно
+          снова
+          часто
+          редко
+          обычно
+          сегодня
+          завтра
+          вчера
+          послезавтра
+          позавчера
+          утром
+          днем
+          вечером
+          ночью
+          туда
+          сюда
+          оттуда
+          отсюда
+          везде
+          нигде
+          откуда
+          почему
+          сколько
+          какое
+          какие
+          который
+          которая
+          которое
+          которые
+          чей
+          хороший
+          хорошая
+          хорошее
+          хорошие
+          плохой
+          плохая
+          плохое
+          плохие
+          новый
+          новая
+          новое
+          новые
+          старый
+          старая
+          старое
+          старые
+          большой
+          большая
+          большое
+          большие
+          маленький
+          маленькая
+          маленькое
+          маленькие
+          первый
+          первая
+          первое
+          первые
+          последний
+          последняя
+          последнее
+          главный
+          главная
+          другая
+          другое
+          другие
+          нужный
+          важный
+          важная
+          важно
+          интересный
+          интересно
+          красивый
+          красивая
+          красиво
+          дорогой
+          дорогая
+          дорого
+          дешевый
+          дешево
+          свободный
+          свободна
+          занят
+          занята
+          готов
+          готова
+          рад
+          рада
+          уверен
+          уверена
+          должен
+          должна
+          должны
+          мое
+          мои
+          моего
+          моей
+          моих
+          мою
+          моим
+          твой
+          твоя
+          твое
+          твои
+          твоего
+          твоей
+          твоих
+          твою
+          наш
+          наша
+          наше
+          наши
+          нашего
+          нашей
+          наших
+          ваш
+          ваша
+          ваше
+          ваши
+          вашего
+          вашей
+          ваших
+          свой
+          своя
+          свое
+          свои
+          своего
+          своей
+          своих
+          мной
+          тебе
+          тобой
+          нем
+          нам
+          нами
+          вами
+          ими
+          эта
+          этих
+          этим
+          этому
+          та
+          те
+          той
+          тех
+          весь
+          вся
+          всей
+          всем
+          сама
+          сами
+          самый
+          самая
+          ничто
+          никто
+          нечего
+          некогда
+          что-то
+          кто-то
+          где-то
+          когда-то
+          как-то
+          какой-то
+          почему-то
+          чего-нибудь
+          что-нибудь
+          кто-нибудь
+          где-нибудь
+          понедельник
+          вторник
+          среда
+          среду
+          четверг
+          пятница
+          пятницу
+          суббота
+          субботу
+          воскресенье
+          неделю
+          выходные
+          праздник
+          январь
+          февраль
+          март
+          апрель
+          май
+          июнь
+          июль
+          август
+          сентябрь
+          октябрь
+          ноябрь
+          декабрь
+          одна
+          одно
+          две
+          четыре
+          пять
+          шесть
+          семь
+          восемь
+          девять
+          десять
+          двадцать
+          тридцать
+          сто
+          миллион
+          второй
+          третий
+          половина
+          денег
+          рублей
+          доллар
+          долларов
+          бат
+          батов
+          евро
+          стоимость
+          оплата
+          оплатить
+          перевод
+          перевести
+          перевел
+          карта
+          карту
+          банк
+          наличные
+          скидка
+          заказ
+          заказать
+          заказал
+          доставка
+          магазин
+          кафе
+          ресторан
+          бар
+          отель
+          гостиница
+          аэропорт
+          билет
+          билеты
+          такси
+          байк
+          скутер
+          аренда
+          пляж
+          море
+          остров
+          бассейн
+          рядом
+          далеко
+          близко
+          прямо
+          налево
+          направо
+          карте
+          еда
+          завтрак
+          обед
+          ужин
+          кофе
+          чай
+          пиво
+          вино
+          сок
+          молоко
+          хлеб
+          мясо
+          курица
+          рыба
+          рис
+          фрукты
+          овощи
+          суп
+          салат
+          вкусно
+          голодный
+          папа
+          дочь
+          сестра
+          бабушка
+          дедушка
+          дети
+          друга
+          друзья
+          подруга
+          девушка
+          парень
+          любимый
+          любимая
+          солнце
+          зайка
+          врач
+          больница
+          аптека
+          лекарство
+          болит
+          заболел
+          заболела
+          здоровье
+          температура
+          погода
+          жарко
+          холодно
+          тепло
+          дождь
+          ветер
+          работы
+          работе
+          работу
+          офис
+          проект
+          встреча
+          встречу
+          встрече
+          клиент
+          клиенты
+          договор
+          документы
+          сайт
+          реклама
+          маркетинг
+          продажи
+          бизнес
+          сайта
+          сайте
+          сайты
+          контент
+          запрос
+          вопросы
+          ответа
+          проблемы
+          ошибка
+          ошибки
+          пример
+          тайланд
+          таиланд
+          пхукет
+          патонг
+          бангкок
+          паттайя
+          россия
+          украина
+          киев
+          москва
+          одесса
+          харьков
+          кстати
+          например
+          вообще
+          короче
+          значит
+          по-моему
+          разумеется
+          кажется
+          видимо
+          наверно
+          действительно
+          серьезно
+          просто
+          именно
+          особенно
+          вообще-то
+          поэтому
+          хотя
+          либо
+          зато
+          однако
+          поскольку
+          отправлю
+          отправим
+          проверить
+          проверю
+          проверил
+          проверь
+          узнаю
+          узнал
+          узнала
+          уточнить
+          уточню
+          подумать
+          подумаю
+          обсудить
+          обсудим
+          договорились
+          договоримся
+          встретимся
+          увидимся
+          созвонимся
+          спишемся
+          напишешь
+          позвонишь
+          приедешь
+          сможешь
+          сможем
+          смогу
+          смог
+          смогла
+          получится
+          получилось
+          нравится
+          нравятся
+          понравилось
+          понравился
+          хватит
+          хватает
+          осталось
+          остался
+          осталась
+          случилось
+          бывает
+          стало
+          становится
+          начинается
+          закончилось
+          человека
+          людей
+          люди
+          людям
+          человеку
+          дня
+          дней
+          дню
+          года
+          году
+          лет
+          времени
+          дома
+          доме
+          домой
+          города
+          городе
+          страны
+          стране
+          жизни
+          делам
+          дела
+          дело
+          делом
+          словами
+          раза
+          разу
+          места
+          месте
+          часа
+          часов
+          часу
+          минут
+          минуты
+          секунду
+          недели
+          неделе
+          месяца
+          месяцев
+          утра
+          вечера
+          огромное
+          благодарю
+          заранее
+          приятно
+          познакомиться
+          хорошего
+          удачи
+          поздравляю
+          рождения
+          счастья
+          здоровья
+          сообщу
+          сообщи
+          напишите
+          ответь
+          ответьте
+          отвечу
+          ответил
+          ответила
+          прочитай
+          прочитаю
+          посмотрел
+          посмотрела
+          слышал
+          слышала
+          представляешь
+          супер
+          класс
+          круто
+          классно
+          здорово
+          прекрасно
+          замечательно
+          ужасно
+          странно
+          нормально
+          неплохо
+          жаль
+          обидно
+          смешно
+          грустно
+          скучно
+          весело
+          страшно
+          выходных
+          позже
+          раньше
+          вовремя
+          открыть
+          открой
+          закрыть
+          закрой
+          включить
+          включи
+          выключить
+          выключи
+          сохранить
+          сохрани
+          удалить
+          удали
+          скачать
+          скачай
+          загрузить
+          установить
+          установи
+          настроить
+          обновить
+          перезагрузить
+          свободен
+          пути
+          опаздываю
+          опоздаю
+          задерживаюсь
+          бесплатно
+          оплачу
+          оплатил
+          оплатила
+          переведу
+          перевела
+          помню
+          помнишь
+          забыл
+          забыла
+          забудь
+          вспомнил
+          вспомнила
+          верно
+          правильно
+          неправильно
+          ошибся
+          ошиблась
+          нового
+          новой
+          новым
+          новую
+          старого
+          меньше
+          хуже
+          дальше
+          ближе
+          выше
+          ниже
+          всему
+          всеми
+          каждый
+          каждая
+          каждое
+          любой
+          любая
+          любое
+          некоторые
+          несколько
+          многие
+          пару
+          длинный
+          короткий
+          высокий
+          низкий
+          быстрый
+          медленный
+          легкий
+          тяжелый
+          простой
+          сложный
+          сложно
+          легко
+          трудно
+          зима
+          весна
+          лето
+          осень
+          машину
+          машине
+          машины
+          дорогу
+          дороге
+          дороги
+          квартиру
+          квартире
+          комнату
+          комнате
+          страница
+          страницу
+          страницы
+          поиск
+          поисковик
+          гугл
+          яндекс
+          трафик
+          ключевые
+          позиции
+          продвижение
+          оптимизация
+          seo
+          smm
+          таргет
+          кампания
+          бюджет
+          клиента
+          клиенту
+          отчет
+          аналитика
+          конверсия
+          лендинг
+          домен
+          хостинг
+          сервер
+          код
+          телефона
+          телефоне
+          компьютера
+          приложения
+          приложении
+          программы
+          обновление
+          версия
+          версию
+          батарея
+          зарядка
+          зарядку
+          EOF_TCK
+          cat > 'TitanCustomKeyboard/app/src/main/assets/dict_uk.txt' <<'EOF_TCK'
+          # frequency order, one word per line
+          не
+          на
+          що
+          він
+          як
+          то
+          це
+          все
+          вона
+          так
+          його
+          але
+          ти
+          до
+          же
+          ви
+          за
+          би
+          по
+          тільки
+          її
+          мені
+          було
+          ось
+          від
+          мене
+          ще
+          ні
+          йому
+          тепер
+          коли
+          навіть
+          ну
+          раптом
+          чи
+          якщо
+          вже
+          або
+          бути
+          був
+          нього
+          вас
+          небудь
+          знову
+          адже
+          там
+          потім
+          себе
+          нічого
+          їй
+          може
+          вони
+          тут
+          де
+          треба
+          ній
+          для
+          ми
+          тебе
+          їх
+          ніж
+          була
+          сам
+          щоб
+          без
+          ніби
+          чого
+          раз
+          теж
+          собі
+          під
+          буде
+          тоді
+          хто
+          цей
+          того
+          тому
+          цього
+          який
+          зовсім
+          ним
+          цьому
+          один
+          майже
+          мій
+          тим
+          неї
+          зараз
+          були
+          куди
+          навіщо
+          всіх
+          ніколи
+          можна
+          при
+          нарешті
+          два
+          про
+          інший
+          хоч
+          після
+          над
+          більше
+          той
+          через
+          ці
+          нас
+          всього
+          них
+          яка
+          багато
+          хіба
+          три
+          цю
+          моя
+          втім
+          добре
+          свою
+          цієї
+          перед
+          іноді
+          краще
+          трохи
+          такий
+          їм
+          більш
+          завжди
+          звичайно
+          між
+          привіт
+          вітаю
+          здрастуйте
+          дякую
+          будь
+          ласка
+          чудово
+          гаразд
+          давай
+          давайте
+          окей
+          ок
+          бувай
+          побачення
+          доброго
+          ранку
+          добрий
+          день
+          вечір
+          добраніч
+          вибач
+          вибачте
+          пробач
+          пробачте
+          звісно
+          можливо
+          мабуть
+          точно
+          правда
+          зрозуміло
+          ясно
+          згоден
+          згодна
+          людина
+          час
+          рік
+          життя
+          рука
+          робота
+          слово
+          місце
+          обличчя
+          друг
+          око
+          питання
+          дім
+          бік
+          країна
+          світ
+          випадок
+          голова
+          дитина
+          сила
+          кінець
+          вигляд
+          система
+          частина
+          місто
+          ставлення
+          жінка
+          гроші
+          земля
+          машина
+          вода
+          батько
+          проблема
+          година
+          право
+          нога
+          рішення
+          двері
+          образ
+          історія
+          влада
+          закон
+          війна
+          бог
+          голос
+          тисяча
+          книга
+          можливість
+          результат
+          ніч
+          стіл
+          ім'я
+          область
+          стаття
+          число
+          компанія
+          народ
+          дружина
+          група
+          розвиток
+          процес
+          суд
+          умова
+          засіб
+          початок
+          світло
+          шлях
+          душа
+          рівень
+          форма
+          зв'язок
+          хвилина
+          вулиця
+          якість
+          думка
+          дорога
+          мати
+          дія
+          місяць
+          держава
+          мова
+          любов
+          погляд
+          мама
+          століття
+          школа
+          мета
+          суспільство
+          діяльність
+          організація
+          президент
+          кімната
+          порядок
+          момент
+          театр
+          лист
+          ранок
+          допомога
+          ситуація
+          роль
+          гривня
+          сенс
+          стан
+          квартира
+          увага
+          тіло
+          праця
+          син
+          міра
+          смерть
+          ринок
+          програма
+          завдання
+          підприємство
+          вікно
+          розмова
+          уряд
+          сім'я
+          родина
+          виробництво
+          інформація
+          становище
+          центр
+          відповідь
+          чоловік
+          автор
+          стіна
+          інтерес
+          правило
+          управління
+          ідея
+          партія
+          рада
+          рахунок
+          серце
+          рух
+          річ
+          матеріал
+          тиждень
+          почуття
+          глава
+          наука
+          ряд
+          газета
+          причина
+          плече
+          ціна
+          план
+          точка
+          основа
+          культура
+          дані
+          документ
+          інститут
+          брат
+          дух
+          сума
+          варіант
+          номер
+          телефон
+          повідомлення
+          чат
+          фото
+          фотографію
+          відео
+          посилання
+          інтернет
+          застосунок
+          додаток
+          комп'ютер
+          ноутбук
+          клавіатура
+          клавіатуру
+          екран
+          кнопка
+          кнопку
+          файл
+          файли
+          пароль
+          пошта
+          пошту
+          адреса
+          адресу
+          налаштування
+          розкладка
+          текст
+          слова
+          дзвінок
+          дзвонити
+          подзвонити
+          подзвони
+          передзвони
+          напиши
+          написати
+          напишу
+          пишу
+          прочитав
+          прочитала
+          надішли
+          надіслати
+          надіслав
+          надіслала
+          отримав
+          отримала
+          скинь
+          скину
+          могти
+          сказати
+          говорити
+          знати
+          стати
+          хотіти
+          бачити
+          отримати
+          йти
+          думати
+          зробити
+          робити
+          розуміти
+          зрозуміти
+          дати
+          стояти
+          жити
+          піти
+          працювати
+          дивитися
+          взяти
+          сидіти
+          знайти
+          залишатися
+          залишитися
+          прийти
+          любити
+          кохати
+          чекати
+          писати
+          читати
+          шукати
+          купити
+          продати
+          платити
+          заплатити
+          запитати
+          питати
+          відповісти
+          допомогти
+          допомагати
+          почати
+          починати
+          закінчити
+          вирішити
+          дізнатися
+          повернутися
+          повернути
+          показати
+          спробувати
+          слухати
+          чути
+          їхати
+          поїхати
+          приїхати
+          поїхав
+          виїхати
+          вийти
+          зайти
+          зустріти
+          зустрітися
+          відпочивати
+          спати
+          їсти
+          пити
+          готувати
+          вчити
+          вчитися
+          грати
+          хочу
+          хочеш
+          хоче
+          хочемо
+          хочете
+          хочуть
+          хотів
+          хотіла
+          хотіли
+          хотілося
+          можу
+          можеш
+          можемо
+          можете
+          можуть
+          міг
+          могла
+          могли
+          знаю
+          знаєш
+          знає
+          знаємо
+          знаєте
+          знають
+          знав
+          знала
+          знали
+          думаю
+          думаєш
+          думає
+          думаємо
+          думаєте
+          думають
+          думав
+          думала
+          думали
+          роблю
+          робиш
+          робить
+          робимо
+          робите
+          роблять
+          робив
+          робила
+          робили
+          кажу
+          кажеш
+          каже
+          кажемо
+          кажете
+          кажуть
+          казав
+          казала
+          казали
+          говорю
+          говориш
+          говорить
+          говоримо
+          сказав
+          сказала
+          сказали
+          скажу
+          скажеш
+          скаже
+          скажи
+          скажіть
+          йду
+          йдеш
+          йде
+          йдемо
+          йдете
+          йдуть
+          ішов
+          ішла
+          ішли
+          пішов
+          пішла
+          пішли
+          піду
+          підеш
+          підемо
+          ходімо
+          буду
+          будеш
+          будемо
+          будете
+          будуть
+          бачу
+          бачиш
+          бачить
+          бачимо
+          бачите
+          бачать
+          бачив
+          бачила
+          бачили
+          розумію
+          розумієш
+          розуміє
+          розуміємо
+          розумієте
+          розуміють
+          зрозумів
+          зрозуміла
+          зрозуміли
+          працюю
+          працюєш
+          працює
+          працюємо
+          працюєте
+          працюють
+          працював
+          працювала
+          працювали
+          живу
+          живеш
+          живе
+          живемо
+          живете
+          живуть
+          жив
+          жила
+          жили
+          зроблю
+          зробиш
+          зробить
+          зробимо
+          зробите
+          зроблять
+          зробив
+          зробила
+          зробили
+          зроби
+          зробіть
+          чекаю
+          чекаєш
+          чекає
+          чекаємо
+          чекаєте
+          чекають
+          чекав
+          чекала
+          чекали
+          чекай
+          чекайте
+          зачекай
+          зачекайте
+          люблю
+          любиш
+          любить
+          любимо
+          любите
+          люблять
+          кохаю
+          кохаєш
+          дивлюся
+          дивишся
+          дивиться
+          дивимося
+          подивись
+          подивлюся
+          подивимося
+          пишеш
+          пише
+          пишемо
+          пишете
+          пишуть
+          писав
+          писала
+          прийду
+          прийдеш
+          прийде
+          прийдемо
+          прийдете
+          прийдуть
+          прийшов
+          прийшла
+          прийшли
+          приходь
+          їду
+          їдеш
+          їде
+          їдемо
+          їдете
+          їдуть
+          їхав
+          їхала
+          поїду
+          поїдемо
+          поїхали
+          приїду
+          приїхав
+          приїхала
+          потрібно
+          потрібен
+          потрібна
+          потрібні
+          необхідно
+          варто
+          дай
+          дайте
+          дам
+          даси
+          дасть
+          дамо
+          дав
+          дала
+          дали
+          візьми
+          візьміть
+          візьму
+          взяв
+          взяла
+          взяли
+          купи
+          куплю
+          купив
+          купила
+          купили
+          купувати
+          допоможи
+          допоможіть
+          допоможу
+          допоміг
+          допомогла
+          нагадай
+          нагадаю
+          почекай
+          почекайте
+          дуже
+          мало
+          трішки
+          лише
+          також
+          одразу
+          відразу
+          скоро
+          пізно
+          рано
+          швидко
+          повільно
+          довго
+          недовго
+          разом
+          окремо
+          часто
+          рідко
+          зазвичай
+          сьогодні
+          завтра
+          вчора
+          післязавтра
+          позавчора
+          вранці
+          вдень
+          увечері
+          вночі
+          туди
+          сюди
+          звідти
+          звідси
+          скрізь
+          ніде
+          звідки
+          чому
+          скільки
+          яке
+          які
+          котрий
+          чий
+          гарний
+          гарна
+          гарне
+          гарні
+          добра
+          добрі
+          поганий
+          погана
+          погане
+          погані
+          новий
+          нова
+          нове
+          нові
+          старий
+          стара
+          старе
+          старі
+          великий
+          велика
+          велике
+          великі
+          маленький
+          маленька
+          маленьке
+          маленькі
+          перший
+          перша
+          перше
+          останній
+          остання
+          головний
+          головна
+          інша
+          інше
+          інші
+          потрібний
+          важливий
+          важлива
+          важливо
+          цікавий
+          цікаво
+          красивий
+          красива
+          гарно
+          дорогий
+          дорого
+          дешевий
+          дешево
+          вільний
+          вільна
+          зайнятий
+          зайнята
+          готовий
+          готова
+          радий
+          впевнений
+          впевнена
+          повинен
+          повинна
+          мусиш
+          маю
+          маєш
+          має
+          маємо
+          маєте
+          мають
+          мав
+          мала
+          мали
+          моє
+          мої
+          мого
+          моєї
+          моїх
+          мою
+          моїм
+          твій
+          твоя
+          твоє
+          твої
+          твого
+          твоєї
+          твоїх
+          твою
+          наш
+          наша
+          наше
+          наші
+          нашого
+          нашої
+          наших
+          ваш
+          ваша
+          ваше
+          ваші
+          вашого
+          вашої
+          ваших
+          свій
+          своя
+          своє
+          свої
+          свого
+          своєї
+          своїх
+          мною
+          тобі
+          тобою
+          ньому
+          нею
+          нам
+          нами
+          вам
+          вами
+          ними
+          ця
+          цих
+          цим
+          та
+          ті
+          тієї
+          тих
+          весь
+          вся
+          всі
+          всієї
+          всім
+          сама
+          самі
+          самий
+          найкращий
+          ніхто
+          ніщо
+          щось
+          хтось
+          десь
+          колись
+          якось
+          якийсь
+          чомусь
+          що-небудь
+          хто-небудь
+          понеділок
+          вівторок
+          середа
+          середу
+          четвер
+          п'ятниця
+          п'ятницю
+          субота
+          суботу
+          неділя
+          неділю
+          вихідні
+          свято
+          січень
+          лютий
+          березень
+          квітень
+          травень
+          червень
+          липень
+          серпень
+          вересень
+          жовтень
+          листопад
+          грудень
+          одна
+          одне
+          дві
+          чотири
+          п'ять
+          шість
+          сім
+          вісім
+          дев'ять
+          десять
+          двадцять
+          тридцять
+          сто
+          мільйон
+          другий
+          третій
+          половина
+          грошей
+          гривень
+          гривні
+          долар
+          доларів
+          бат
+          батів
+          євро
+          вартість
+          оплата
+          оплатити
+          переказ
+          переказати
+          карта
+          картку
+          банк
+          готівка
+          знижка
+          замовлення
+          замовити
+          замовив
+          доставка
+          магазин
+          кафе
+          ресторан
+          бар
+          готель
+          аеропорт
+          квиток
+          квитки
+          таксі
+          байк
+          скутер
+          оренда
+          пляж
+          море
+          острів
+          басейн
+          поруч
+          далеко
+          близько
+          прямо
+          ліворуч
+          праворуч
+          наліво
+          направо
+          мапі
+          їжа
+          сніданок
+          обід
+          вечеря
+          кава
+          чай
+          пиво
+          вино
+          сік
+          молоко
+          хліб
+          м'ясо
+          курка
+          риба
+          рис
+          фрукти
+          овочі
+          суп
+          салат
+          смачно
+          голодний
+          тато
+          донька
+          дочка
+          сестра
+          бабуся
+          дідусь
+          діти
+          друзі
+          подруга
+          дівчина
+          хлопець
+          коханий
+          кохана
+          любий
+          люба
+          сонечко
+          зайчик
+          лікар
+          лікарня
+          аптека
+          ліки
+          болить
+          захворів
+          захворіла
+          здоров'я
+          температура
+          погода
+          спекотно
+          холодно
+          тепло
+          дощ
+          сонце
+          вітер
+          роботи
+          роботі
+          роботу
+          офіс
+          проєкт
+          проект
+          зустріч
+          зустрічі
+          клієнт
+          клієнти
+          договір
+          документи
+          сайт
+          реклама
+          маркетинг
+          продажі
+          бізнес
+          сайту
+          сайті
+          сайти
+          контент
+          запит
+          проблеми
+          помилка
+          помилки
+          приклад
+          таїланд
+          пхукет
+          патонг
+          бангкок
+          паттайя
+          україна
+          київ
+          львів
+          одеса
+          харків
+          дніпро
+          речі
+          наприклад
+          взагалі
+          коротше
+          значить
+          думку
+          здається
+          дійсно
+          серйозно
+          просто
+          саме
+          особливо
+          хоча
+          поки
+          наче
+          зате
+          однак
+          проте
+          оскільки
+          бо
+          надішлю
+          надішлемо
+          перевірити
+          перевірю
+          перевірив
+          перевір
+          дізнаюся
+          дізнався
+          дізналася
+          уточнити
+          уточню
+          подумати
+          подумаю
+          обговорити
+          обговоримо
+          домовилися
+          домовимося
+          зустрінемося
+          побачимося
+          зідзвонимося
+          спишемося
+          напишеш
+          подзвониш
+          приїдеш
+          зможеш
+          зможемо
+          зможу
+          зміг
+          змогла
+          вийде
+          вийшло
+          подобається
+          подобаються
+          сподобалося
+          сподобався
+          вистачить
+          вистачає
+          залишилося
+          залишився
+          залишилася
+          сталося
+          буває
+          стало
+          стає
+          починається
+          закінчилося
+          людини
+          людей
+          люди
+          людям
+          людині
+          дня
+          днів
+          року
+          році
+          років
+          часу
+          часі
+          вдома
+          додому
+          міста
+          місті
+          країни
+          країні
+          справи
+          справа
+          разу
+          місця
+          місці
+          години
+          годин
+          хвилин
+          хвилини
+          секунду
+          тижня
+          тижні
+          місяця
+          місяців
+          вечора
+          ночі
+          щиро
+          заздалегідь
+          приємно
+          познайомитися
+          гарного
+          удачі
+          днем
+          народження
+          щастя
+          повідомлю
+          повідом
+          напишіть
+          відповідай
+          відповім
+          відповів
+          відповіла
+          прочитай
+          прочитаю
+          подивився
+          подивилася
+          чув
+          чула
+          уявляєш
+          супер
+          клас
+          круто
+          класно
+          прекрасно
+          чудовий
+          жахливо
+          дивно
+          нормально
+          непогано
+          шкода
+          прикро
+          смішно
+          сумно
+          нудно
+          весело
+          страшно
+          відкрити
+          відкрий
+          закрити
+          закрий
+          увімкнути
+          увімкни
+          вимкнути
+          вимкни
+          зберегти
+          збережи
+          видалити
+          видали
+          завантажити
+          встановити
+          встанови
+          налаштувати
+          оновити
+          перезавантажити
+          дорозі
+          запізнююся
+          запізнюся
+          затримуюся
+          коштує
+          безкоштовно
+          оплачу
+          оплатив
+          оплатила
+          перекажу
+          переказала
+          пам'ятаю
+          пам'ятаєш
+          забув
+          забула
+          забудь
+          згадав
+          згадала
+          вірно
+          правильно
+          неправильно
+          помилився
+          помилилася
+          менше
+          гірше
+          далі
+          ближче
+          вище
+          нижче
+          раніше
+          пізніше
+          кожен
+          кожна
+          кожне
+          будь-який
+          будь-яка
+          деякі
+          кілька
+          сторінка
+          сторінку
+          пошук
+          трафік
+          ключові
+          позиції
+          просування
+          оптимізація
+          seo
+          smm
+          таргет
+          кампанія
+          бюджет
+          звіт
+          аналітика
+          конверсія
+          лендінг
+          домен
+          хостинг
+          сервер
+          код
+          телефону
+          телефоні
+          комп'ютера
+          застосунку
+          програми
+          оновлення
+          версія
+          версію
+          батарея
+          зарядка
+          зарядку
+          EOF_TCK
+      - name: Build APK
+        working-directory: TitanCustomKeyboard
+        run: gradle assembleDebug --no-daemon --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TitanCustomKeyboard-0.7.0-apk
+          path: TitanCustomKeyboard/app/build/outputs/apk/debug/*.apk
