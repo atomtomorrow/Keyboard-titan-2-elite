@@ -16,7 +16,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Write source (TitanCustomKeyboard 0.7.3)
+      - name: Write source (TitanCustomKeyboard 0.7.4)
         run: |
           mkdir -p TitanCustomKeyboard TitanCustomKeyboard/app TitanCustomKeyboard/app/src/main TitanCustomKeyboard/app/src/main/assets TitanCustomKeyboard/app/src/main/java/com/ievhenii/titankeyboard TitanCustomKeyboard/app/src/main/res/values TitanCustomKeyboard/app/src/main/res/xml
           cat > 'TitanCustomKeyboard/settings.gradle' <<'EOF_TCK'
@@ -44,8 +44,8 @@ jobs:
                   applicationId 'com.ievhenii.titankeyboard'
                   minSdk 26
                   targetSdk 35
-                  versionCode 10
-                  versionName '0.7.3'
+                  versionCode 11
+                  versionName '0.7.4'
               }
           }
           EOF_TCK
@@ -349,12 +349,12 @@ jobs:
               private boolean isExcluded(int c){return (c>=7&&c<=16)||(c>=68&&c<=76)||c==55||c==56;}
               private void build(){
                   ScrollView sv=new ScrollView(this); root=new LinearLayout(this); root.setOrientation(1); root.setPadding(20,18,20,30); sv.addView(root); root.setBackgroundColor(0xfff3f5f8); setContentView(sv);
-                  root.addView(label("Titan Custom Keyboard 0.7.3",24,true)); root.addView(label("Редактор физических клавиш Titan 2 Elite",14,false));
+                  root.addView(label("Titan Custom Keyboard 0.7.4",24,true)); root.addView(label("Редактор физических клавиш Titan 2 Elite",14,false));
                   section("Язык ввода");
                   Spinner lang=new Spinner(this);
                   lang.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,new String[]{"Українська","Русский","English"}));
                   lang.setSelection(p.getInt("language",0)); root.addView(lang);
-                  root.addView(label("Быстрое переключение прямо при наборе: зажми SHIFT и нажми ПРОБЕЛ. Порядок: Українська → Русский → English → Українська. Ещё можно нажать на цветной значок языка справа в панели подсказок. Долгое нажатие на значок открывает эти настройки.",12,false));
+                  root.addView(label("Быстрое переключение прямо при наборе: зажми ALT и нажми ПРОБЕЛ. Порядок: Українська → Русский → English → Українська. Ещё можно нажать на цветной значок языка справа в панели подсказок. Долгое нажатие на значок открывает эти настройки.",12,false));
                   section("Круглый значок смены языка");
                   root.addView(label("При каждой смене языка в центре экрана на секунду появляется круглый значок UA / RU / EN. Чтобы он показывался поверх любого приложения, разреши «Показ поверх других окон». Без разрешения значок появляется над панелью подсказок.",12,false));
                   overlayStatus=label("",13,true); root.addView(overlayStatus);
@@ -393,7 +393,7 @@ jobs:
                   section("Повтор удаления"); addDeleteRepeatSetting();
                   section("Определение физической клавиши"); Button detect=new Button(this); detect.setText("ОПРЕДЕЛИТЬ КЛАВИШУ — НАЖМИ НА НЕЁ НА ТЕЛЕФОНЕ"); root.addView(detect); detectStatus=label("Ожидание",13,false); root.addView(detectStatus); detect.setOnClickListener(v->{detecting=true;detectStatus.setText("Теперь нажми физическую клавишу Titan 2 Elite");});
                   section("Физические модификаторы");
-                  root.addView(label("ALT Left — 57 · SHIFT Left — 59 · SHIFT Right — 60 · SPACE — 62 · SYM — 63 (обычная клавиша: ю / Shift+SYM: Ю). Оба SHIFT переключают заглавные буквы; SHIFT + ПРОБЕЛ меняет язык.",13,false));
+                  root.addView(label("ALT Left — 57 · SHIFT Left — 59 · SHIFT Right — 60 · SPACE — 62 · SYM — 63 (обычная клавиша: ю / Shift+SYM: Ю). Оба SHIFT переключают заглавные буквы; ALT + ПРОБЕЛ меняет язык.",13,false));
                   section("Назначения клавиш"); root.addView(label("Коротко | ALT | SYM-слой (для старых назначений) | SHIFT | 0,5 сек. | 1 сек.",12,true)); rowsRoot=new LinearLayout(this); rowsRoot.setOrientation(1); root.addView(rowsRoot);
                   for(int i=0;i<CODES.length;i++) addRow(CODES[i],NAMES[i]);
                   section("Функции SHIFT"); root.addView(label("Левый и правый SHIFT работают одинаково: только заглавные буквы. SYM (код 63) по умолчанию вводит ю, с Shift — Ю. ALT — цифры и спецсимволы.",13,false));
@@ -893,7 +893,7 @@ jobs:
               private final Map<Integer, Long> down = new HashMap<>();
               private SharedPreferences prefs;
               private boolean alt = false, shiftLeft = false, shiftRight = false;
-              private boolean spaceCombo = false;   // Shift + Space was used for switching, swallow the space
+              private boolean spaceCombo = false;   // Alt + Space was used for switching, swallow the space
 
               private SuggestionEngine engine;
               private LangBadge badge;
@@ -1014,7 +1014,7 @@ jobs:
                   hintView.setGravity(Gravity.CENTER);
                   hintView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
                   hintView.setTextColor(cSub());
-                  hintView.setText("Shift + Пробел — смена языка");
+                  hintView.setText("Alt + Пробел — смена языка");
                   candidateBar.addView(hintView, 0, new LinearLayout.LayoutParams(0, -1, 1));
 
                   langPill = new TextView(this);
@@ -1149,8 +1149,8 @@ jobs:
                   if (code == KeyEvent.KEYCODE_ALT_LEFT || code == KeyEvent.KEYCODE_ALT_RIGHT) { alt = true; return true; }
                   if (code == KeyEvent.KEYCODE_SHIFT_LEFT) { shiftLeft = true; return true; }
                   if (code == KeyEvent.KEYCODE_SHIFT_RIGHT) { shiftRight = true; return true; }
-                  // SHIFT + SPACE — next language (the space itself is not typed)
-                  if (code == KeyEvent.KEYCODE_SPACE && (shiftLeft || shiftRight || e.isShiftPressed())) {
+                  // ALT + SPACE — next language (the space itself is not typed)
+                  if (code == KeyEvent.KEYCODE_SPACE && (alt || e.isAltPressed())) {
                       if (e.getRepeatCount() == 0) { spaceCombo = true; switchLanguage(); }
                       return true;
                   }
@@ -1277,7 +1277,7 @@ jobs:
                   if (addWord != null && res.size() > 2) res = new java.util.ArrayList<>(res.subList(0, 2));
                   boolean any = !res.isEmpty() || addWord != null;
                   hintView.setVisibility(any ? View.GONE : View.VISIBLE);
-                  hintView.setText(passwordField ? "Подсказки выключены в поле пароля" : "Shift + Пробел — смена языка");
+                  hintView.setText(passwordField ? "Подсказки выключены в поле пароля" : "Alt + Пробел — смена языка");
                   slotsBox.setVisibility(any ? View.VISIBLE : View.GONE);
                   for (int i = 0; i < 3; i++) {
                       if (i < res.size()) {
@@ -4928,14 +4928,14 @@ jobs:
         run: gradle assembleDebug --no-daemon --stacktrace
       - uses: actions/upload-artifact@v4
         with:
-          name: TitanCustomKeyboard-0.7.3-apk
+          name: TitanCustomKeyboard-0.7.4-apk
           path: TitanCustomKeyboard/app/build/outputs/apk/debug/*.apk
       - name: Put APK into the repository (apk/)
         run: |
           mkdir -p apk
-          cp TitanCustomKeyboard/app/build/outputs/apk/debug/app-debug.apk apk/TitanCustomKeyboard-0.7.3.apk
+          cp TitanCustomKeyboard/app/build/outputs/apk/debug/app-debug.apk apk/TitanCustomKeyboard-0.7.4.apk
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add apk/TitanCustomKeyboard-0.7.3.apk
-          git commit -m "APK 0.7.3 [skip ci]" || echo "nothing to commit"
+          git add apk/TitanCustomKeyboard-0.7.4.apk
+          git commit -m "APK 0.7.4 [skip ci]" || echo "nothing to commit"
           git push
