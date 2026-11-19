@@ -16,7 +16,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Write source (TitanCustomKeyboard 0.7.4)
+      - name: Write source (TitanCustomKeyboard 0.8.0)
         run: |
           mkdir -p TitanCustomKeyboard TitanCustomKeyboard/app TitanCustomKeyboard/app/src/main TitanCustomKeyboard/app/src/main/assets TitanCustomKeyboard/app/src/main/java/com/ievhenii/titankeyboard TitanCustomKeyboard/app/src/main/res/values TitanCustomKeyboard/app/src/main/res/xml
           cat > 'TitanCustomKeyboard/settings.gradle' <<'EOF_TCK'
@@ -44,8 +44,8 @@ jobs:
                   applicationId 'com.ievhenii.titankeyboard'
                   minSdk 26
                   targetSdk 35
-                  versionCode 11
-                  versionName '0.7.4'
+                  versionCode 12
+                  versionName '0.8.0'
               }
           }
           EOF_TCK
@@ -94,6 +94,79 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <input-method xmlns:android="http://schemas.android.com/apk/res/android"
               android:supportsSwitchingToNextInputMethod="false" />
+          EOF_TCK
+          cat > 'TitanCustomKeyboard/app/src/main/java/com/ievhenii/titankeyboard/KeyRules.java' <<'EOF_TCK'
+          package com.ievhenii.titankeyboard;
+
+          import android.content.Context;
+          import android.content.SharedPreferences;
+
+          import java.util.HashMap;
+          import java.util.Map;
+
+          /**
+           * Key rules ("key_<code>_<layer>") are stored separately for each layout, in their own file:
+           * keys_uk (Українська), keys_ru (Русский), keys_en (English).
+           * Old versions kept one shared set in "keyboard"; on first start it is copied into all three files.
+           */
+          final class KeyRules {
+              static final String[] FILES = {"keys_uk", "keys_ru", "keys_en"};
+              static final String[] TAGS = {"uk", "ru", "en"};
+              static final String MIGRATED_FLAG = "keysPerLayout";
+
+              private KeyRules() { }
+
+              static int clamp(int lang) { return Math.max(0, Math.min(2, lang)); }
+
+              static SharedPreferences of(Context c, int lang) {
+                  return c.getSharedPreferences(FILES[clamp(lang)], Context.MODE_PRIVATE);
+              }
+
+              static String key(int code, String layer) { return "key_" + code + "_" + layer; }
+
+              /** Copies the old shared rules into every layout once (existing per-layout values are kept). */
+              static void migrate(Context c) {
+                  SharedPreferences main = c.getSharedPreferences("keyboard", Context.MODE_PRIVATE);
+                  if (main.getBoolean(MIGRATED_FLAG, false)) return;
+                  Map<String, String> legacy = new HashMap<>();
+                  for (Map.Entry<String, ?> e : main.getAll().entrySet()) {
+                      if (e.getKey().startsWith("key_") && e.getValue() instanceof String) legacy.put(e.getKey(), (String) e.getValue());
+                  }
+                  for (int l = 0; l < 3; l++) {
+                      SharedPreferences f = of(c, l);
+                      SharedPreferences.Editor ed = f.edit();
+                      for (Map.Entry<String, String> e : legacy.entrySet()) {
+                          if (!f.contains(e.getKey())) ed.putString(e.getKey(), e.getValue());
+                      }
+                      ed.commit();
+                  }
+                  SharedPreferences.Editor m = main.edit();
+                  for (String k : legacy.keySet()) m.remove(k);
+                  m.putBoolean(MIGRATED_FLAG, true);
+                  m.commit();
+              }
+
+              /** Built-in defaults. Cyrillic letters on holds are only for the Ukrainian and Russian layouts. */
+              static String builtIn(int lang, int code, String layer) {
+                  boolean cyr = clamp(lang) != 2;
+                  if (code == 63 && layer.equals("tap")) return "ю";
+                  if (code == 49 && layer.equals("alt")) return "_";
+                  if (cyr && layer.equals("hold500")) {
+                      if (code == 40) return "Ж";
+                      if (code == 41) return "ь";
+                      if (code == 47) return lang == 1 ? "ы" : "ї";
+                  }
+                  if (layer.equals("hold1000")) {
+                      switch (code) {
+                          case 45: return "0"; case 46: return "3"; case 47: return "4";
+                          case 51: return "1"; case 52: return "8"; case 54: return "7";
+                          case 31: return "9"; case 32: return "5"; case 33: return "2";
+                          case 34: return "6";
+                      }
+                  }
+                  return "";
+              }
+          }
           EOF_TCK
           cat > 'TitanCustomKeyboard/app/src/main/java/com/ievhenii/titankeyboard/LangBadge.java' <<'EOF_TCK'
           package com.ievhenii.titankeyboard;
@@ -324,7 +397,10 @@ jobs:
               private LangBadge testBadge;
               private SuggestionEngine dictEngine;
               private LinearLayout userList, freqList;
-              private TextView userCount;
+              private TextView userCount, rulesTitle;
+              private int editLang=0;
+              private static final String[] LANG_NAMES={"Українська","Русский","English"};
+              private SharedPreferences kp(){return KeyRules.of(this,editLang);}
               private final List<Row> rows=new ArrayList<>();
               static class Row { int code; String label; EditText[] f=new EditText[6]; Row(int c,String l){code=c;label=l;} }
               private static final int[] CODES=new int[28];
@@ -337,7 +413,7 @@ jobs:
               }
               private final String[] layers={"tap","alt","sym","shift","hold500","hold1000"};
               private final String[] hints={"Коротко","ALT","SYM","SHIFT","0,5 сек","1 сек"};
-              @Override public void onCreate(Bundle b){super.onCreate(b);p=getSharedPreferences("keyboard",MODE_PRIVATE);build();}
+              @Override public void onCreate(Bundle b){super.onCreate(b);p=getSharedPreferences("keyboard",MODE_PRIVATE);KeyRules.migrate(this);editLang=KeyRules.clamp(p.getInt("language",0));build();}
               @Override public boolean dispatchKeyEvent(KeyEvent e){
                   if(detecting && e.getAction()==KeyEvent.ACTION_DOWN && e.getRepeatCount()==0){
                       int c=e.getKeyCode(); detecting=false;
@@ -349,11 +425,22 @@ jobs:
               private boolean isExcluded(int c){return (c>=7&&c<=16)||(c>=68&&c<=76)||c==55||c==56;}
               private void build(){
                   ScrollView sv=new ScrollView(this); root=new LinearLayout(this); root.setOrientation(1); root.setPadding(20,18,20,30); sv.addView(root); root.setBackgroundColor(0xfff3f5f8); setContentView(sv);
-                  root.addView(label("Titan Custom Keyboard 0.7.4",24,true)); root.addView(label("Редактор физических клавиш Titan 2 Elite",14,false));
+                  root.addView(label("Titan Custom Keyboard 0.8.0",24,true)); root.addView(label("Редактор физических клавиш Titan 2 Elite",14,false));
                   section("Язык ввода");
                   Spinner lang=new Spinner(this);
                   lang.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,new String[]{"Українська","Русский","English"}));
-                  lang.setSelection(p.getInt("language",0)); root.addView(lang);
+                  lang.setSelection(editLang); root.addView(lang);
+                  lang.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener(){
+                      public void onItemSelected(android.widget.AdapterView<?> parent,android.view.View view,int pos,long id){
+                          if(pos==editLang)return;
+                          saveRowsTo(editLang);                 // keep what was typed for the previous layout
+                          editLang=pos;
+                          p.edit().putInt("language",pos).apply();
+                          loadRows();
+                          Toast.makeText(MainActivity.this,"Правила раскладки: "+LANG_NAMES[pos],Toast.LENGTH_SHORT).show();
+                      }
+                      public void onNothingSelected(android.widget.AdapterView<?> parent){}
+                  });
                   root.addView(label("Быстрое переключение прямо при наборе: зажми ALT и нажми ПРОБЕЛ. Порядок: Українська → Русский → English → Українська. Ещё можно нажать на цветной значок языка справа в панели подсказок. Долгое нажатие на значок открывает эти настройки.",12,false));
                   section("Круглый значок смены языка");
                   root.addView(label("При каждой смене языка в центре экрана на секунду появляется круглый значок UA / RU / EN. Чтобы он показывался поверх любого приложения, разреши «Показ поверх других окон». Без разрешения значок появляется над панелью подсказок.",12,false));
@@ -394,8 +481,12 @@ jobs:
                   section("Определение физической клавиши"); Button detect=new Button(this); detect.setText("ОПРЕДЕЛИТЬ КЛАВИШУ — НАЖМИ НА НЕЁ НА ТЕЛЕФОНЕ"); root.addView(detect); detectStatus=label("Ожидание",13,false); root.addView(detectStatus); detect.setOnClickListener(v->{detecting=true;detectStatus.setText("Теперь нажми физическую клавишу Titan 2 Elite");});
                   section("Физические модификаторы");
                   root.addView(label("ALT Left — 57 · SHIFT Left — 59 · SHIFT Right — 60 · SPACE — 62 · SYM — 63 (обычная клавиша: ю / Shift+SYM: Ю). Оба SHIFT переключают заглавные буквы; ALT + ПРОБЕЛ меняет язык.",13,false));
-                  section("Назначения клавиш"); root.addView(label("Коротко | ALT | SYM-слой (для старых назначений) | SHIFT | 0,5 сек. | 1 сек.",12,true)); rowsRoot=new LinearLayout(this); rowsRoot.setOrientation(1); root.addView(rowsRoot);
+                  section("Назначения клавиш");
+                  rulesTitle=label("",15,true); rulesTitle.setTextColor(0xff3759A5); root.addView(rulesTitle);
+                  root.addView(label("У каждой раскладки свои правила (отдельные файлы keys_uk / keys_ru / keys_en). Выбери раскладку вверху — ниже откроются и будут сохраняться её правила. Пустое поле удержания = удержание выключено.",12,false));
+                  root.addView(label("Коротко | ALT | SYM-слой (для старых назначений) | SHIFT | 0,5 сек. | 1 сек.",12,true)); rowsRoot=new LinearLayout(this); rowsRoot.setOrientation(1); root.addView(rowsRoot);
                   for(int i=0;i<CODES.length;i++) addRow(CODES[i],NAMES[i]);
+                  updateRulesTitle();
                   section("Функции SHIFT"); root.addView(label("Левый и правый SHIFT работают одинаково: только заглавные буквы. SYM (код 63) по умолчанию вводит ю, с Shift — Ю. ALT — цифры и спецсимволы.",13,false));
                   Button save=new Button(this); save.setText("СОХРАНИТЬ ВСЕ НАСТРОЙКИ"); root.addView(save); save.setOnClickListener(v->{saveCurrentRows(lang);Toast.makeText(this,"Сохранено",Toast.LENGTH_SHORT).show();});
                   section("Резервная копия профиля");
@@ -404,7 +495,7 @@ jobs:
                   Button imp=new Button(this); imp.setText("ИМПОРТИРОВАТЬ ПРОФИЛЬ ИЗ ФАЙЛА"); root.addView(imp);
                   imp.setOnClickListener(v->{Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);i.setType("*/*");startActivityForResult(i,REQ_IMPORT);});
                   Button ime=new Button(this); ime.setText("НАСТРОЙКИ КЛАВИАТУР ANDROID"); root.addView(ime); ime.setOnClickListener(v->startActivity(new Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)));
-                  Button reset=new Button(this); reset.setText("СБРОСИТЬ НАЗНАЧЕНИЯ"); root.addView(reset); reset.setOnClickListener(v->new android.app.AlertDialog.Builder(this).setMessage("Сбросить все назначения?").setNegativeButton("Отмена",null).setPositiveButton("Сбросить",(d,w)->{SharedPreferences.Editor ed=p.edit();for(String k:p.getAll().keySet())if(k.startsWith("key_"))ed.remove(k);ed.apply();recreate();}).show());
+                  Button reset=new Button(this); reset.setText("СБРОСИТЬ НАЗНАЧЕНИЯ"); root.addView(reset); reset.setOnClickListener(v->new android.app.AlertDialog.Builder(this).setMessage("Сбросить назначения для раскладки «"+LANG_NAMES[editLang]+"»? Другие раскладки не изменятся.").setNegativeButton("Отмена",null).setPositiveButton("Сбросить",(d,w)->{kp().edit().clear().commit();loadRows();Toast.makeText(this,"Сброшено: "+LANG_NAMES[editLang],Toast.LENGTH_SHORT).show();}).show());
               }
               @Override protected void onResume(){super.onResume();updateOverlayStatus();if(dictEngine!=null){dictEngine.reloadLearned();renderUserWords();if(dictEngine.dictsLoaded())renderFreq();}}
               private TextView chipButton(String text,int color){
@@ -455,10 +546,20 @@ jobs:
                   overlayStatus.setTextColor(ok?0xff1a7f37:0xffb42318);
               }
               private void saveCurrentRows(Spinner lang){
-                  SharedPreferences.Editor ed=p.edit().putInt("language",lang.getSelectedItemPosition());
-                  for(Row r:rows)for(int j=0;j<layers.length;j++)ed.putString(key(r.code,layers[j]),r.f[j].getText().toString());
-                  ed.apply();
+                  p.edit().putInt("language",editLang).apply();
+                  saveRowsTo(editLang);
               }
+              private void saveRowsTo(int l){
+                  SharedPreferences.Editor ed=KeyRules.of(this,l).edit();
+                  for(Row r:rows)for(int j=0;j<layers.length;j++)ed.putString(key(r.code,layers[j]),r.f[j].getText().toString());
+                  ed.commit();
+              }
+              private void loadRows(){
+                  SharedPreferences k=kp();
+                  for(Row r:rows)for(int j=0;j<layers.length;j++)r.f[j].setText(k.getString(key(r.code,layers[j]),defaultFor(r.code,layers[j])));
+                  updateRulesTitle();
+              }
+              private void updateRulesTitle(){ if(rulesTitle!=null) rulesTitle.setText("Правила для раскладки: "+LANG_NAMES[editLang]); }
               @Override protected void onActivityResult(int requestCode,int resultCode,Intent data){
                   super.onActivityResult(requestCode,resultCode,data);
                   if(resultCode!=RESULT_OK||data==null||data.getData()==null)return;
@@ -466,6 +567,9 @@ jobs:
                       if(requestCode==REQ_EXPORT){
                           JSONObject obj=new JSONObject();
                           for(Map.Entry<String,?> e:p.getAll().entrySet())obj.put(e.getKey(),e.getValue());
+                          JSONObject layouts=new JSONObject();
+                          for(int l=0;l<3;l++){JSONObject o=new JSONObject();for(Map.Entry<String,?> e:KeyRules.of(this,l).getAll().entrySet())o.put(e.getKey(),e.getValue());layouts.put(KeyRules.TAGS[l],o);}
+                          obj.put("layouts",layouts);
                           try(OutputStream out=getContentResolver().openOutputStream(data.getData())){
                               if(out==null)throw new Exception("Не удалось открыть файл");
                               out.write(obj.toString(2).getBytes(StandardCharsets.UTF_8));
@@ -479,16 +583,32 @@ jobs:
                           }
                           JSONObject obj=new JSONObject(b.toString());
                           SharedPreferences.Editor ed=p.edit().clear();
+                          for(int l=0;l<3;l++)KeyRules.of(this,l).edit().clear().commit();
+                          boolean perLayout=obj.has("layouts");
+                          if(perLayout){
+                              JSONObject layouts=obj.getJSONObject("layouts");
+                              for(int l=0;l<3;l++){
+                                  if(!layouts.has(KeyRules.TAGS[l]))continue;
+                                  JSONObject o=layouts.getJSONObject(KeyRules.TAGS[l]);
+                                  SharedPreferences.Editor le=KeyRules.of(this,l).edit();
+                                  java.util.Iterator<String> li=o.keys();
+                                  while(li.hasNext()){String k=li.next();Object v=o.get(k);if(v instanceof String)le.putString(k,(String)v);}
+                                  le.commit();
+                              }
+                          }
                           java.util.Iterator<String> it=obj.keys();
                           while(it.hasNext()){
                               String k=it.next();Object v=obj.get(k);
+                              if(k.equals("layouts")||k.equals(KeyRules.MIGRATED_FLAG))continue;
                               if(v instanceof Boolean)ed.putBoolean(k,(Boolean)v);
                               else if(v instanceof Integer)ed.putInt(k,(Integer)v);
                               else if(v instanceof Long)ed.putLong(k,(Long)v);
                               else if(v instanceof Double)ed.putFloat(k,((Double)v).floatValue());
                               else if(v instanceof String)ed.putString(k,(String)v);
                           }
-                          ed.apply();
+                          ed.putBoolean(KeyRules.MIGRATED_FLAG,perLayout);
+                          ed.commit();
+                          KeyRules.migrate(this);   // an old profile: its shared rules go to all three layouts
                           Toast.makeText(this,"Профиль импортирован. Перезапусти клавиатуру.",Toast.LENGTH_LONG).show();
                           recreate();
                       }
@@ -519,8 +639,14 @@ jobs:
                   });
               }
               private void addTimer(String key,String title,int def){LinearLayout box=new LinearLayout(this);box.setOrientation(1);root.addView(box);TextView val=label(title+": "+p.getInt(key,def),13,false);box.addView(val);SeekBar s=new SeekBar(this);s.setMax(3000);s.setProgress(p.getInt(key,def));box.addView(s);s.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){public void onProgressChanged(SeekBar b,int n,boolean u){val.setText(title+": "+n+" мс (0 = выкл.)");}public void onStartTrackingTouch(SeekBar b){}public void onStopTrackingTouch(SeekBar b){p.edit().putInt(key,b.getProgress()).apply();}});}
-              private void addRow(int code,String name){Row r=new Row(code,name);rows.add(r);LinearLayout card=new LinearLayout(this);card.setOrientation(1);card.setPadding(8,6,8,8);card.setBackgroundColor(0xffffffff);LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(-1,-2);cp.bottomMargin=5;rowsRoot.addView(card,cp);card.addView(label(name+" • Android keycode "+code,14,true));LinearLayout line=new LinearLayout(this);card.addView(line);for(int j=0;j<layers.length;j++){LinearLayout col=new LinearLayout(this);col.setOrientation(1);col.setPadding(2,0,2,0);line.addView(col,new LinearLayout.LayoutParams(0,-2,1));col.addView(label(hints[j],10,false));EditText e=new EditText(this);e.setSingleLine(true);e.setTextSize(13);e.setPadding(3,0,3,0);e.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);e.setHint("—");e.setText(p.getString(key(code,layers[j]),defaultFor(code,layers[j])));col.addView(e,new LinearLayout.LayoutParams(-1,42));r.f[j]=e;}}
+              private void addRow(int code,String name){Row r=new Row(code,name);rows.add(r);LinearLayout card=new LinearLayout(this);card.setOrientation(1);card.setPadding(8,6,8,8);card.setBackgroundColor(0xffffffff);LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(-1,-2);cp.bottomMargin=5;rowsRoot.addView(card,cp);card.addView(label(name+" • Android keycode "+code,14,true));LinearLayout line=new LinearLayout(this);card.addView(line);for(int j=0;j<layers.length;j++){LinearLayout col=new LinearLayout(this);col.setOrientation(1);col.setPadding(2,0,2,0);line.addView(col,new LinearLayout.LayoutParams(0,-2,1));col.addView(label(hints[j],10,false));EditText e=new EditText(this);e.setSingleLine(true);e.setTextSize(13);e.setPadding(3,0,3,0);e.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);e.setHint("—");e.setText(kp().getString(key(code,layers[j]),defaultFor(code,layers[j])));col.addView(e,new LinearLayout.LayoutParams(-1,42));r.f[j]=e;}}
               private String defaultFor(int code,String layer){
+                  String d=KeyRules.builtIn(editLang,code,layer);
+                  if(!d.isEmpty())return d;
+                  if(layer.equals("alt")){if(code>=29&&code<=54){char c=(char)('a'+code-29);String sym=altLegend(c);if(sym!=null)return sym;}return "";}
+                  return "";
+              }
+              private String defaultForOld(int code,String layer){
                   if(code==63 && layer.equals("tap"))return "ю";
                   if(code==49 && layer.equals("alt"))return "_";
                   if(code==40 && layer.equals("hold500"))return "Ж";
@@ -892,6 +1018,7 @@ jobs:
           public class TitanImeService extends InputMethodService {
               private final Map<Integer, Long> down = new HashMap<>();
               private SharedPreferences prefs;
+              private final SharedPreferences[] keyPrefs = new SharedPreferences[3];
               private boolean alt = false, shiftLeft = false, shiftRight = false;
               private boolean spaceCombo = false;   // Alt + Space was used for switching, swallow the space
 
@@ -926,6 +1053,8 @@ jobs:
               @Override public void onCreate() {
                   super.onCreate();
                   prefs = getSharedPreferences("keyboard", MODE_PRIVATE);
+                  KeyRules.migrate(this);
+                  for (int i = 0; i < 3; i++) keyPrefs[i] = KeyRules.of(this, i);
                   engine = new SuggestionEngine(this, prefs);
                   badge = new LangBadge(this);
               }
@@ -1199,23 +1328,17 @@ jobs:
                   refreshSuggestions();
               }
 
+              /** Rule of the current layout (its own file keys_uk / keys_ru / keys_en); built-in default if never set. */
               private String value(int code, String layer) {
-                  String saved = prefs.getString("key_" + code + "_" + layer, "");
-                  if (saved != null && !saved.isEmpty()) return saved;
-                  if (code == KeyEvent.KEYCODE_U && layer.equals("alt")) return "_";
-                  if (code == KeyEvent.KEYCODE_L && layer.equals("hold500")) return "Ж";
-                  if (code == KeyEvent.KEYCODE_M && layer.equals("hold500")) return "ь";
-                  if (code == KeyEvent.KEYCODE_S && layer.equals("hold500")) return "ы";
-                  if (layer.equals("hold1000")) {
-                      switch (code) {
-                          case KeyEvent.KEYCODE_Q: return "0"; case KeyEvent.KEYCODE_R: return "3";
-                          case KeyEvent.KEYCODE_S: return "4"; case KeyEvent.KEYCODE_W: return "1";
-                          case KeyEvent.KEYCODE_X: return "8"; case KeyEvent.KEYCODE_Z: return "7";
-                          case KeyEvent.KEYCODE_C: return "9"; case KeyEvent.KEYCODE_D: return "5";
-                          case KeyEvent.KEYCODE_E: return "2"; case KeyEvent.KEYCODE_F: return "6";
-                      }
+                  int l = lang();
+                  SharedPreferences kp = keyPrefs[l];
+                  String k = KeyRules.key(code, layer);
+                  if (kp != null && kp.contains(k)) {
+                      String saved = kp.getString(k, "");
+                      if (saved != null && !saved.isEmpty()) return saved;
+                      if (!layer.equals("tap") && !layer.equals("alt")) return "";   // cleared by the user = off
                   }
-                  return "";
+                  return KeyRules.builtIn(l, code, layer);
               }
 
               private void handleEnter(boolean shifted) {
@@ -4928,14 +5051,14 @@ jobs:
         run: gradle assembleDebug --no-daemon --stacktrace
       - uses: actions/upload-artifact@v4
         with:
-          name: TitanCustomKeyboard-0.7.4-apk
+          name: TitanCustomKeyboard-0.8.0-apk
           path: TitanCustomKeyboard/app/build/outputs/apk/debug/*.apk
       - name: Put APK into the repository (apk/)
         run: |
           mkdir -p apk
-          cp TitanCustomKeyboard/app/build/outputs/apk/debug/app-debug.apk apk/TitanCustomKeyboard-0.7.4.apk
+          cp TitanCustomKeyboard/app/build/outputs/apk/debug/app-debug.apk apk/TitanCustomKeyboard-0.8.0.apk
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add apk/TitanCustomKeyboard-0.7.4.apk
-          git commit -m "APK 0.7.4 [skip ci]" || echo "nothing to commit"
+          git add apk/TitanCustomKeyboard-0.8.0.apk
+          git commit -m "APK 0.8.0 [skip ci]" || echo "nothing to commit"
           git push
