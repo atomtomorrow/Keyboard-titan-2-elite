@@ -13,7 +13,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Write source (TitanCustomKeyboard 0.7.0)
+      - name: Write source (TitanCustomKeyboard 0.7.1)
         run: |
           mkdir -p TitanCustomKeyboard TitanCustomKeyboard/app TitanCustomKeyboard/app/src/main TitanCustomKeyboard/app/src/main/assets TitanCustomKeyboard/app/src/main/java/com/ievhenii/titankeyboard TitanCustomKeyboard/app/src/main/res/values TitanCustomKeyboard/app/src/main/res/xml
           cat > 'TitanCustomKeyboard/settings.gradle' <<'EOF_TCK'
@@ -41,8 +41,8 @@ jobs:
                   applicationId 'com.ievhenii.titankeyboard'
                   minSdk 26
                   targetSdk 35
-                  versionCode 7
-                  versionName '0.7.0'
+                  versionCode 8
+                  versionName '0.7.1'
               }
           }
           EOF_TCK
@@ -346,7 +346,7 @@ jobs:
               private boolean isExcluded(int c){return (c>=7&&c<=16)||(c>=68&&c<=76)||c==55||c==56;}
               private void build(){
                   ScrollView sv=new ScrollView(this); root=new LinearLayout(this); root.setOrientation(1); root.setPadding(20,18,20,30); sv.addView(root); root.setBackgroundColor(0xfff3f5f8); setContentView(sv);
-                  root.addView(label("Titan Custom Keyboard 0.7.0",24,true)); root.addView(label("Редактор физических клавиш Titan 2 Elite",14,false));
+                  root.addView(label("Titan Custom Keyboard 0.7.1",24,true)); root.addView(label("Редактор физических клавиш Titan 2 Elite",14,false));
                   section("Язык ввода");
                   Spinner lang=new Spinner(this);
                   lang.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,new String[]{"Українська","Русский","English"}));
@@ -856,6 +856,8 @@ jobs:
           import android.view.Gravity;
           import android.view.KeyEvent;
           import android.view.View;
+          import android.view.WindowInsets;
+          import android.os.Build;
           import android.view.inputmethod.EditorInfo;
           import android.view.inputmethod.InputConnection;
           import android.widget.LinearLayout;
@@ -1024,8 +1026,30 @@ jobs:
                           @Override public boolean onLongClick(View v) { return removeSuggestion(idx); }
                       });
                   }
+                  // Android 15+ draws the keyboard window edge-to-edge: the system navigation bar
+                  // (hide-keyboard ⌄ and keyboard switcher) lies on top of the bottom of our view.
+                  // Lift the suggestion bar above it; our background fills the space under the buttons.
+                  if (Build.VERSION.SDK_INT >= 35) outer.setPadding(0, 0, 0, navBarHeightGuess());
+                  outer.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+                      @Override public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
+                          int bottom;
+                          if (Build.VERSION.SDK_INT >= 30) {
+                              bottom = insets.getInsets(WindowInsets.Type.navigationBars()).bottom;
+                          } else {
+                              bottom = insets.getSystemWindowInsetBottom();
+                          }
+                          v.setPadding(0, 0, 0, Math.max(0, bottom));
+                          return insets;
+                      }
+                  });
+                  outer.requestApplyInsets();
                   updatePill(false);
                   return outer;
+              }
+
+              private int navBarHeightGuess() {
+                  int id = getResources().getIdentifier("navigation_bar_height", "dimen", "android");
+                  return id > 0 ? getResources().getDimensionPixelSize(id) : dp(48);
               }
 
               private int lang() { return LangBadge.clamp(prefs.getInt("language", 0)); }
@@ -4860,5 +4884,5 @@ jobs:
         run: gradle assembleDebug --no-daemon --stacktrace
       - uses: actions/upload-artifact@v4
         with:
-          name: TitanCustomKeyboard-0.7.0-apk
+          name: TitanCustomKeyboard-0.7.1-apk
           path: TitanCustomKeyboard/app/build/outputs/apk/debug/*.apk
