@@ -7,6 +7,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     defaults:
       run:
         working-directory: keytester
@@ -21,3 +23,14 @@ jobs:
         with:
           name: KeyTester-apk
           path: keytester/app/build/outputs/apk/debug/app-debug.apk
+      - name: Commit APK to branch
+        working-directory: .
+        run: |
+          mkdir -p keytester-apk
+          cp keytester/app/build/outputs/apk/debug/app-debug.apk keytester-apk/KeyTester.apk
+          git config user.name github-actions
+          git config user.email github-actions@users.noreply.github.com
+          git add keytester-apk/KeyTester.apk
+          git commit -m "KeyTester APK [skip ci]" || exit 0
+          git pull --rebase origin keytester
+          git push origin HEAD:keytester
