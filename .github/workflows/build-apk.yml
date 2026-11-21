@@ -16,7 +16,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Write source (TitanCustomKeyboard 0.8.0)
+      - name: Write source (TitanCustomKeyboard 0.9.0)
         run: |
           mkdir -p TitanCustomKeyboard TitanCustomKeyboard/app TitanCustomKeyboard/app/src/main TitanCustomKeyboard/app/src/main/assets TitanCustomKeyboard/app/src/main/java/com/ievhenii/titankeyboard TitanCustomKeyboard/app/src/main/res/values TitanCustomKeyboard/app/src/main/res/xml
           cat > 'TitanCustomKeyboard/settings.gradle' <<'EOF_TCK'
@@ -44,8 +44,8 @@ jobs:
                   applicationId 'com.ievhenii.titankeyboard'
                   minSdk 26
                   targetSdk 35
-                  versionCode 12
-                  versionName '0.8.0'
+                  versionCode 13
+                  versionName '0.9.0'
               }
           }
           EOF_TCK
@@ -62,6 +62,7 @@ jobs:
                           <category android:name="android.intent.category.LAUNCHER" />
                       </intent-filter>
                   </activity>
+                  <activity android:name=".DictActivity" android:exported="false" android:label="Мой словарь" />
                   <service
                       android:name=".TitanImeService"
                       android:label="Titan Custom Keyboard"
@@ -94,6 +95,113 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <input-method xmlns:android="http://schemas.android.com/apk/res/android"
               android:supportsSwitchingToNextInputMethod="false" />
+          EOF_TCK
+          cat > 'TitanCustomKeyboard/app/src/main/java/com/ievhenii/titankeyboard/DictActivity.java' <<'EOF_TCK'
+          package com.ievhenii.titankeyboard;
+
+          import android.app.Activity;
+          import android.content.SharedPreferences;
+          import android.graphics.Typeface;
+          import android.os.Bundle;
+          import android.text.InputType;
+          import android.widget.Button;
+          import android.widget.EditText;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.TextView;
+          import android.widget.Toast;
+
+          /** "Мой словарь": own words, frequently typed unknown words. Opened from the main settings. */
+          public class DictActivity extends Activity {
+              private SharedPreferences p;
+              private LinearLayout root, userList, freqList;
+              private TextView userCount;
+              private SuggestionEngine dictEngine;
+
+              @Override public void onCreate(Bundle b) {
+                  super.onCreate(b);
+                  p = getSharedPreferences("keyboard", MODE_PRIVATE);
+                  ScrollView sv = new ScrollView(this);
+                  root = new LinearLayout(this); root.setOrientation(1); root.setPadding(20, 18, 20, 30);
+                  root.setBackgroundColor(0xfff3f5f8); sv.addView(root); setContentView(sv);
+                  root.addView(label("Мой словарь", 24, true));
+                  root.addView(label("Свои слова (имена, названия, термины, сленг) всегда предлагаются первыми. Добавить можно здесь — по одному или сразу списком, — или прямо при наборе: если слова нет в словаре, справа в панели подсказок появится «+ слово», нажми на него. Долгое нажатие на подсказку убирает слово из словаря.",12,false));
+                  EditText addField=new EditText(this);
+                  addField.setHint("Слова через пробел, запятую или с новой строки");
+                  addField.setMinLines(2);
+                  addField.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE|InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+                  root.addView(addField);
+                  Button addBtn=new Button(this); addBtn.setText("ДОБАВИТЬ В МОЙ СЛОВАРЬ"); root.addView(addBtn);
+                  dictEngine=new SuggestionEngine(this,p,false);
+                  addBtn.setOnClickListener(v->{
+                      int n=0,bad=0;
+                      for(String w:addField.getText().toString().split("[\\s,;]+")){ if(w.trim().isEmpty())continue; if(dictEngine.addUserWord(w))n++; else bad++; }
+                      addField.setText("");
+                      Toast.makeText(this,n>0?("Добавлено слов: "+n+(bad>0?" · пропущено: "+bad:"")):"Ничего не добавлено",Toast.LENGTH_SHORT).show();
+                      renderUserWords(); renderFreq();
+                  });
+                  userCount=label("",13,true); userCount.setPadding(0,12,0,4); root.addView(userCount);
+                  userList=new LinearLayout(this); userList.setOrientation(1); root.addView(userList);
+                  TextView ft=label("Часто набираешь, но нет в словаре",13,true); ft.setPadding(0,14,0,4); root.addView(ft);
+                  freqList=new LinearLayout(this); freqList.setOrientation(1); root.addView(freqList);
+                  renderUserWords();
+                  freqList.addView(label("Загрузка…",12,false));
+                  new Thread(()->{dictEngine.loadAll(); runOnUiThread(this::renderFreq);}).start();
+              }
+
+              @Override protected void onResume() {
+                  super.onResume();
+                  if (dictEngine != null) { dictEngine.reloadLearned(); renderUserWords(); if (dictEngine.dictsLoaded()) renderFreq(); }
+              }
+
+              private TextView label(String s, int size, boolean bold) {
+                  TextView t = new TextView(this); t.setText(s); t.setTextSize(size); t.setTextColor(0xff172033);
+                  if (bold) t.setTypeface(null, Typeface.BOLD);
+                  return t;
+              }
+
+              private TextView chipButton(String text,int color){
+                  TextView b=new TextView(this); b.setText(text); b.setTextSize(13); b.setTypeface(null,Typeface.BOLD); b.setTextColor(color);
+                  b.setPadding(22,10,22,10); b.setGravity(android.view.Gravity.CENTER);
+                  android.graphics.drawable.GradientDrawable g=new android.graphics.drawable.GradientDrawable();
+                  g.setCornerRadius(40); g.setStroke(2,color); g.setColor(0x00000000); b.setBackground(g); return b;
+              }
+              private LinearLayout wordRow(String word,String extra){
+                  LinearLayout row=new LinearLayout(this); row.setOrientation(0); row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+                  row.setPadding(16,8,8,8); row.setBackgroundColor(0xffffffff);
+                  TextView t=label(word,15,false); row.addView(t,new LinearLayout.LayoutParams(0,-2,1));
+                  if(extra!=null){TextView x=label(extra,12,false);x.setTextColor(0xff8a93a3);x.setPadding(0,0,16,0);row.addView(x);}
+                  return row;
+              }
+              private void renderUserWords(){
+                  if(userList==null||dictEngine==null)return;
+                  userList.removeAllViews();
+                  java.util.List<String> words=dictEngine.userWordList();
+                  userCount.setText("В моём словаре: "+words.size());
+                  if(words.isEmpty()){userList.addView(label("Пока пусто",12,false));return;}
+                  for(String w:words){
+                      LinearLayout row=wordRow(w,null);
+                      TextView del=chipButton("✕",0xffb42318);
+                      del.setOnClickListener(v->{dictEngine.removeUserWord(w);renderUserWords();renderFreq();});
+                      row.addView(del);
+                      LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2); lp.bottomMargin=3; userList.addView(row,lp);
+                  }
+              }
+              private void renderFreq(){
+                  if(freqList==null||dictEngine==null||!dictEngine.dictsLoaded())return;
+                  freqList.removeAllViews();
+                  java.util.List<String[]> items=dictEngine.frequentUnknown(20);
+                  if(items.isEmpty()){freqList.addView(label("Пока нет — такие слова появятся здесь, когда наберёшь их хотя бы 2 раза.",12,false));return;}
+                  for(String[] it:items){
+                      final String w=it[0];
+                      LinearLayout row=wordRow(w,"×"+it[1]);
+                      TextView add=chipButton("+ ДОБАВИТЬ",0xff3759A5);
+                      add.setOnClickListener(v->{dictEngine.addUserWord(w);renderUserWords();renderFreq();});
+                      row.addView(add);
+                      LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2); lp.bottomMargin=3; freqList.addView(row,lp);
+                  }
+              }
+          }
           EOF_TCK
           cat > 'TitanCustomKeyboard/app/src/main/java/com/ievhenii/titankeyboard/KeyRules.java' <<'EOF_TCK'
           package com.ievhenii.titankeyboard;
@@ -398,6 +506,7 @@ jobs:
               private SuggestionEngine dictEngine;
               private LinearLayout userList, freqList;
               private TextView userCount, rulesTitle;
+              private Button dictBtn;
               private int editLang=0;
               private static final String[] LANG_NAMES={"Українська","Русский","English"};
               private SharedPreferences kp(){return KeyRules.of(this,editLang);}
@@ -425,7 +534,7 @@ jobs:
               private boolean isExcluded(int c){return (c>=7&&c<=16)||(c>=68&&c<=76)||c==55||c==56;}
               private void build(){
                   ScrollView sv=new ScrollView(this); root=new LinearLayout(this); root.setOrientation(1); root.setPadding(20,18,20,30); sv.addView(root); root.setBackgroundColor(0xfff3f5f8); setContentView(sv);
-                  root.addView(label("Titan Custom Keyboard 0.8.0",24,true)); root.addView(label("Редактор физических клавиш Titan 2 Elite",14,false));
+                  root.addView(label("Titan Custom Keyboard 0.9.0",24,true)); root.addView(label("Редактор физических клавиш Titan 2 Elite",14,false));
                   section("Язык ввода");
                   Spinner lang=new Spinner(this);
                   lang.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,new String[]{"Українська","Русский","English"}));
@@ -451,28 +560,21 @@ jobs:
                   test.setOnClickListener(v->{if(testBadge==null)testBadge=new LangBadge(this);testBadge.show(lang.getSelectedItemPosition(),null);});
                   updateOverlayStatus();
                   section("Мой словарь");
-                  root.addView(label("Свои слова (имена, названия, термины, сленг) всегда предлагаются первыми. Добавить можно здесь — по одному или сразу списком, — или прямо при наборе: если слова нет в словаре, справа в панели подсказок появится «+ слово», нажми на него. Долгое нажатие на подсказку убирает слово из словаря.",12,false));
-                  EditText addField=new EditText(this);
-                  addField.setHint("Слова через пробел, запятую или с новой строки");
-                  addField.setMinLines(2);
-                  addField.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE|InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-                  root.addView(addField);
-                  Button addBtn=new Button(this); addBtn.setText("ДОБАВИТЬ В МОЙ СЛОВАРЬ"); root.addView(addBtn);
-                  dictEngine=new SuggestionEngine(this,p,false);
-                  addBtn.setOnClickListener(v->{
-                      int n=0,bad=0;
-                      for(String w:addField.getText().toString().split("[\\s,;]+")){ if(w.trim().isEmpty())continue; if(dictEngine.addUserWord(w))n++; else bad++; }
-                      addField.setText("");
-                      Toast.makeText(this,n>0?("Добавлено слов: "+n+(bad>0?" · пропущено: "+bad:"")):"Ничего не добавлено",Toast.LENGTH_SHORT).show();
-                      renderUserWords(); renderFreq();
-                  });
-                  userCount=label("",13,true); userCount.setPadding(0,12,0,4); root.addView(userCount);
-                  userList=new LinearLayout(this); userList.setOrientation(1); root.addView(userList);
-                  TextView ft=label("Часто набираешь, но нет в словаре",13,true); ft.setPadding(0,14,0,4); root.addView(ft);
-                  freqList=new LinearLayout(this); freqList.setOrientation(1); root.addView(freqList);
-                  renderUserWords();
-                  freqList.addView(label("Загрузка…",12,false));
-                  new Thread(()->{dictEngine.loadAll(); runOnUiThread(this::renderFreq);}).start();
+                  root.addView(label("Свои слова, часто набираемые слова и удаление слов — на отдельном экране.",12,false));
+                  dictBtn=new Button(this); root.addView(dictBtn);
+                  dictBtn.setOnClickListener(v->startActivity(new Intent(this,DictActivity.class)));
+                  updateDictBtn();
+                  section("Панель цифр и символов");
+                  root.addView(label("Строка над подсказками: нажатие вставляет символ. Впиши свои символы через пробел (можно $ € ₴ £ ¥ ₽ ° № и т.д.). Строку можно листать вбок.",12,false));
+                  android.widget.CheckBox symOn=new android.widget.CheckBox(this); symOn.setText("Показывать панель символов"); symOn.setChecked(p.getBoolean("symBarOn",true)); root.addView(symOn);
+                  symOn.setOnCheckedChangeListener((cb,on)->p.edit().putBoolean("symBarOn",on).apply());
+                  EditText symItems=new EditText(this); symItems.setText(p.getString("symBarItems",TitanImeService.DEFAULT_SYMBOLS)); symItems.setMinLines(2);
+                  symItems.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE|InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS); root.addView(symItems);
+                  LinearLayout symBtns=new LinearLayout(this); root.addView(symBtns);
+                  Button symSave=new Button(this); symSave.setText("СОХРАНИТЬ СИМВОЛЫ"); symBtns.addView(symSave,new LinearLayout.LayoutParams(0,-2,1));
+                  Button symDef=new Button(this); symDef.setText("ПО УМОЛЧАНИЮ"); symBtns.addView(symDef,new LinearLayout.LayoutParams(0,-2,1));
+                  symSave.setOnClickListener(v->{p.edit().putString("symBarItems",symItems.getText().toString().trim()).apply();Toast.makeText(this,"Сохранено — откроется при следующем показе клавиатуры",Toast.LENGTH_SHORT).show();});
+                  symDef.setOnClickListener(v->{symItems.setText(TitanImeService.DEFAULT_SYMBOLS);p.edit().putString("symBarItems",TitanImeService.DEFAULT_SYMBOLS).apply();});
                   section("Отступ панели подсказок снизу");
                   root.addView(label("Если панель подсказок перекрывает системная полоса с кнопкой «⌄», подними её ползунком. «Авто» — высота полосы навигации Android.",12,false));
                   addBottomPadSetting();
@@ -497,7 +599,12 @@ jobs:
                   Button ime=new Button(this); ime.setText("НАСТРОЙКИ КЛАВИАТУР ANDROID"); root.addView(ime); ime.setOnClickListener(v->startActivity(new Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)));
                   Button reset=new Button(this); reset.setText("СБРОСИТЬ НАЗНАЧЕНИЯ"); root.addView(reset); reset.setOnClickListener(v->new android.app.AlertDialog.Builder(this).setMessage("Сбросить назначения для раскладки «"+LANG_NAMES[editLang]+"»? Другие раскладки не изменятся.").setNegativeButton("Отмена",null).setPositiveButton("Сбросить",(d,w)->{kp().edit().clear().commit();loadRows();Toast.makeText(this,"Сброшено: "+LANG_NAMES[editLang],Toast.LENGTH_SHORT).show();}).show());
               }
-              @Override protected void onResume(){super.onResume();updateOverlayStatus();if(dictEngine!=null){dictEngine.reloadLearned();renderUserWords();if(dictEngine.dictsLoaded())renderFreq();}}
+              @Override protected void onResume(){super.onResume();updateOverlayStatus();updateDictBtn();}
+              private void updateDictBtn(){
+                  if(dictBtn==null)return;
+                  int n=0; for(String k:p.getAll().keySet()) if(k.startsWith("udict_")) n++;
+                  dictBtn.setText("ОТКРЫТЬ МОЙ СЛОВАРЬ ("+n+") →");
+              }
               private TextView chipButton(String text,int color){
                   TextView b=new TextView(this); b.setText(text); b.setTextSize(13); b.setTypeface(null,Typeface.BOLD); b.setTextColor(color);
                   b.setPadding(22,10,22,10); b.setGravity(android.view.Gravity.CENTER);
@@ -697,6 +804,7 @@ jobs:
           final class SuggestionEngine {
               static final int UA = 0, RU = 1, EN = 2;
               private static final String[] FILES = {"dict_uk.txt", "dict_ru.txt", "dict_en.txt"};
+              private static final String[] BIGRAM_FILES = {"bigrams_uk.txt", "bigrams_ru.txt", "bigrams_en.txt"};
 
               private static final class Dict {
                   final String[] words;     // normalised (lowercase), in frequency order
@@ -711,6 +819,11 @@ jobs:
               private final Map<String, Integer> learned = new HashMap<>();
               /** My dictionary: words added by hand (prefs "udict_<word>" = word as written). */
               private final Map<String, String> userWords = new HashMap<>();
+              /** Built-in "word -> likely next words" per language ("*" = start of a sentence). */
+              @SuppressWarnings("unchecked")
+              private final Map<String, String[]>[] builtinNext = new Map[3];
+              /** Learned word pairs: prev -> (next -> count). Saved as prefs "bg_<prev>|<next>". */
+              private final Map<String, Map<String, Integer>> learnedNext = new HashMap<>();
 
               SuggestionEngine(Context ctx, SharedPreferences prefs) { this(ctx, prefs, true); }
 
@@ -723,7 +836,31 @@ jobs:
                   }, "dict-loader").start();
               }
 
-              void loadAll() { for (int i = 0; i < 3; i++) load(i); }
+              void loadAll() { for (int i = 0; i < 3; i++) { load(i); loadNext(i); } }
+
+              private void loadNext(int lang) {
+                  Map<String, String[]> m = new HashMap<>();
+                  try (BufferedReader r = new BufferedReader(new InputStreamReader(ctx.getAssets().open(BIGRAM_FILES[lang]), StandardCharsets.UTF_8))) {
+                      String line;
+                      while ((line = r.readLine()) != null) {
+                          line = line.trim();
+                          int c = line.indexOf(':');
+                          if (line.isEmpty() || line.startsWith("#") || c <= 0) continue;
+                          String key = line.substring(0, c).trim();
+                          key = key.equals("*") ? "*" : norm(key);
+                          String[] add = line.substring(c + 1).trim().split("\\s+");
+                          String[] old = m.get(key);
+                          if (old == null) m.put(key, add);
+                          else {
+                              String[] both = new String[old.length + add.length];
+                              System.arraycopy(old, 0, both, 0, old.length);
+                              System.arraycopy(add, 0, both, old.length, add.length);
+                              m.put(key, both);
+                          }
+                      }
+                  } catch (Exception ignored) { }
+                  synchronized (dicts) { builtinNext[lang] = m; }
+              }
 
               private void load(int lang) {
                   ArrayList<String> w = new ArrayList<>(), d = new ArrayList<>();
@@ -747,12 +884,17 @@ jobs:
               synchronized void reloadLearned() {
                   learned.clear();
                   userWords.clear();
+                  learnedNext.clear();
                   if (prefs == null) return;
                   for (Map.Entry<String, ?> e : prefs.getAll().entrySet()) {
                       if (e.getKey().startsWith("word_") && e.getValue() instanceof Integer) {
                           learned.put(e.getKey().substring(5), (Integer) e.getValue());
                       } else if (e.getKey().startsWith("udict_") && e.getValue() instanceof String) {
                           userWords.put(e.getKey().substring(6), (String) e.getValue());
+                      } else if (e.getKey().startsWith("bg_") && e.getValue() instanceof Integer) {
+                          String pair = e.getKey().substring(3);
+                          int bar = pair.indexOf('|');
+                          if (bar > 0) putNext(pair.substring(0, bar), pair.substring(bar + 1), (Integer) e.getValue());
                       }
                   }
               }
@@ -832,6 +974,82 @@ jobs:
                   int n = Math.min(10000, (learned.containsKey(w) ? learned.get(w) : 0) + amount);
                   learned.put(w, n);
                   if (prefs != null) prefs.edit().putInt("word_" + w, n).apply();
+              }
+
+              private void putNext(String prev, String next, int n) {
+                  Map<String, Integer> m = learnedNext.get(prev);
+                  if (m == null) { m = new HashMap<>(); learnedNext.put(prev, m); }
+                  m.put(next, n);
+              }
+
+              /** Like cleanWord but one-letter words ("у", "в", "я", "I") are allowed in word pairs. */
+              private static String pairWord(String raw) {
+                  if (raw == null) return null;
+                  String w = raw.trim().replace('’', '\'').replace('ʼ', '\'').replaceAll("^[^\\p{L}]+|[^\\p{L}]+$", "");
+                  if (w.isEmpty() || w.length() > 32 || !w.matches("[\\p{L}][\\p{L}'-]*")) return null;
+                  return w;
+              }
+
+              /** Remembers that "next" was typed after "prev" (used for next-word suggestions). */
+              synchronized void learnPair(String prev, String next) {
+                  String a = pairWord(prev), b = pairWord(next);
+                  if (a == null || b == null) return;
+                  a = norm(a); b = norm(b);
+                  Map<String, Integer> m = learnedNext.get(a);
+                  int n = Math.min(1000, (m != null && m.containsKey(b) ? m.get(b) : 0) + 1);
+                  putNext(a, b, n);
+                  if (prefs != null) prefs.edit().putInt("bg_" + a + "|" + b, n).apply();
+              }
+
+              /**
+               * Next-word suggestions after a finished word (or at the start of a sentence when prev == null).
+               * Learned pairs first, then the built-in associations of the language.
+               */
+              synchronized List<String> predict(String prev, int lang, int max, boolean capitalize) {
+                  final Map<String, Double> score = new LinkedHashMap<>();
+                  final Map<String, String> show = new HashMap<>();
+                  String key = prev == null ? "*" : norm(prev);
+                  boolean latin = prev != null ? isLatin(prev) : lang == EN;
+                  int primary = latin ? EN : (lang == RU ? RU : UA);
+                  if (prev != null && !latin) {
+                      String p = norm(prev);
+                      if (p.matches(".*[іїєґ].*")) primary = UA; else if (p.matches(".*[ыэъ].*")) primary = RU;
+                  }
+                  if (prev != null) {
+                      Map<String, Integer> m = learnedNext.get(key);
+                      if (m != null) for (Map.Entry<String, Integer> e : m.entrySet()) {
+                          score.put(e.getKey(), 1000.0 + e.getValue() * 100.0);
+                      }
+                  }
+                  int[] order = latin ? new int[]{EN} : new int[]{primary, primary == UA ? RU : UA};
+                  double w = 1.0;
+                  for (int l : order) {
+                      Map<String, String[]> bn;
+                      synchronized (dicts) { bn = builtinNext[l]; }
+                      if (bn != null) {
+                          String[] next = bn.get(key);
+                          if (next != null) for (int i = 0; i < next.length; i++) {
+                              String n = norm(next[i]);
+                              double s = w * (500.0 - i * 10);
+                              Double old = score.get(n);
+                              score.put(n, old == null ? s : old + s * 0.2);
+                              if (!show.containsKey(n)) show.put(n, next[i]);
+                          }
+                      }
+                      w = 0.25;
+                  }
+                  ArrayList<String> keys = new ArrayList<>(score.keySet());
+                  Collections.sort(keys, new Comparator<String>() {
+                      @Override public int compare(String a, String b) { return Double.compare(score.get(b), score.get(a)); }
+                  });
+                  ArrayList<String> out = new ArrayList<>();
+                  for (String k : keys) {
+                      String d = userWords.containsKey(k) ? userWords.get(k) : (show.containsKey(k) ? show.get(k) : k);
+                      if (capitalize && d.length() > 0) d = d.substring(0, 1).toUpperCase(Locale.ROOT) + d.substring(1);
+                      if (!out.contains(d)) out.add(d);
+                      if (out.size() >= max) break;
+                  }
+                  return out;
               }
 
               synchronized void forget(String word) {
@@ -1034,10 +1252,15 @@ jobs:
               private boolean dark = false;
               private boolean passwordField = false;
               private String currentWord = "";
+              private android.widget.HorizontalScrollView symScroll;
+              private LinearLayout symRow;
+              private String builtSymbols = null;
+              private boolean autoSpaced = false;   // a space was added after a picked suggestion
+              static final String DEFAULT_SYMBOLS = "1 2 3 4 5 6 7 8 9 0 $ € ₴ @ # % & * - + = / ( ) ! ? « » \" ' : ;";
               private static final class AddTag { final String word; AddTag(String w) { word = w; } }
 
               private static final Pattern WORD_END = Pattern.compile("([\\p{L}][\\p{L}'’ʼ-]*)$");
-              private static final Pattern WORD_BEFORE_SEP = Pattern.compile("([\\p{L}][\\p{L}'’ʼ-]*[\\p{L}])[\\s.,!?;:()\\[\\]{}\"«»]$");
+              private static final Pattern WORD_BEFORE_SEP = Pattern.compile("([\\p{L}](?:[\\p{L}'’ʼ-]*[\\p{L}])?)[\\s.,!?;:()\\[\\]{}\"«»]$");
 
               private final Handler repeatHandler = new Handler(Looper.getMainLooper());
               private boolean deleteHeld = false;
@@ -1102,6 +1325,18 @@ jobs:
                   topLine.setBackgroundColor(cLine());
                   outer.addView(topLine, new LinearLayout.LayoutParams(-1, Math.max(1, dp(0.7f))));
 
+                  // configurable row of digits and symbols above the suggestions
+                  symScroll = new android.widget.HorizontalScrollView(this);
+                  symScroll.setHorizontalScrollBarEnabled(false);
+                  symRow = new LinearLayout(this);
+                  symRow.setOrientation(LinearLayout.HORIZONTAL);
+                  symRow.setGravity(Gravity.CENTER_VERTICAL);
+                  symRow.setPadding(dp(4), dp(3), dp(4), 0);
+                  symScroll.addView(symRow, new android.widget.FrameLayout.LayoutParams(-2, -1));
+                  outer.addView(symScroll, new LinearLayout.LayoutParams(-1, dp(40)));
+                  builtSymbols = null;
+                  rebuildSymbols();
+
                   candidateBar = new LinearLayout(this);
                   candidateBar.setOrientation(LinearLayout.HORIZONTAL);
                   candidateBar.setGravity(Gravity.CENTER_VERTICAL);
@@ -1153,6 +1388,7 @@ jobs:
                   langPill.setIncludeFontPadding(false);
                   LinearLayout.LayoutParams pl = new LinearLayout.LayoutParams(dp(44), dp(30));
                   pl.leftMargin = dp(6);
+                  pl.rightMargin = dp(10);
                   candidateBar.addView(langPill, pl);
                   langPill.setOnClickListener(new View.OnClickListener() {
                       @Override public void onClick(View v) { switchLanguage(); }
@@ -1253,6 +1489,8 @@ jobs:
 
               @Override public void onStartInputView(EditorInfo info, boolean restarting) {
                   super.onStartInputView(info, restarting);
+                  autoSpaced = false;
+                  rebuildSymbols();
                   applyBottomPad();
                   updatePill(false);
                   refreshSuggestions();
@@ -1356,6 +1594,20 @@ jobs:
               private void commit(String s) {
                   InputConnection ic = getCurrentInputConnection();
                   if (ic != null) {
+                      // "слово| " + "," -> "слово, " (the space we added after a suggestion moves behind the mark)
+                      if (autoSpaced && s.matches("[.,!?;:…]")) {
+                          CharSequence b = ic.getTextBeforeCursor(1, 0);
+                          if (b != null && b.length() == 1 && b.charAt(0) == ' ') {
+                              ic.beginBatchEdit();
+                              ic.deleteSurroundingText(1, 0);
+                              ic.commitText(s + " ", 1);
+                              ic.endBatchEdit();
+                              autoSpaced = false;
+                              refreshSuggestions();
+                              return;
+                          }
+                      }
+                      autoSpaced = false;
                       ic.commitText(s, 1);
                       if (s.matches(".*[\\s.,!?;:()\\[\\]{}\"«»].*")) learnWordBeforeCursor(s);
                       refreshSuggestions();
@@ -1372,7 +1624,50 @@ jobs:
                   String before = q.toString();
                   if (justTyped.isEmpty()) before = before + " ";
                   Matcher m = WORD_BEFORE_SEP.matcher(before);
-                  if (m.find()) engine.learn(m.group(1), 1);
+                  if (m.find()) {
+                      engine.learn(m.group(1), 1);
+                      String prev = previousWord(before.substring(0, m.start(1)));
+                      if (prev != null) engine.learnPair(prev, m.group(1));
+                  }
+              }
+
+              private static final Pattern PREV_WORD = Pattern.compile("([\\p{L}][\\p{L}'’ʼ-]*)[\\s,]*$");
+
+              /** The word right before the given text end (null if a sentence ended there). */
+              private static String previousWord(String text) {
+                  String t = text.replaceAll("\\s+$", "");
+                  if (t.isEmpty() || t.matches("(?s).*[.!?…]$")) return null;
+                  Matcher m = PREV_WORD.matcher(t);
+                  return m.find() ? m.group(1) : null;
+              }
+
+              private void rebuildSymbols() {
+                  if (symRow == null) return;
+                  boolean on = prefs.getBoolean("symBarOn", true);
+                  String items = prefs.getString("symBarItems", DEFAULT_SYMBOLS);
+                  if (items == null || items.trim().isEmpty()) items = DEFAULT_SYMBOLS;
+                  symScroll.setVisibility(on ? View.VISIBLE : View.GONE);
+                  String sig = on + "|" + items + "|" + dark;
+                  if (sig.equals(builtSymbols)) return;
+                  builtSymbols = sig;
+                  symRow.removeAllViews();
+                  for (String it : items.trim().split("\\s+")) {
+                      final String sym = it;
+                      TextView b = new TextView(this);
+                      b.setText(sym);
+                      b.setGravity(Gravity.CENTER);
+                      b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+                      b.setTextColor(cText());
+                      b.setMinWidth(dp(38));
+                      b.setPadding(dp(8), 0, dp(8), 0);
+                      b.setBackground(ripple(cChip(), 8));
+                      b.setOnClickListener(new View.OnClickListener() {
+                          @Override public void onClick(View v) { commit(sym); }
+                      });
+                      LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(34));
+                      lp.rightMargin = dp(4);
+                      symRow.addView(b, lp);
+                  }
               }
 
               // ------------------------------------------------------------------ suggestions
@@ -1388,9 +1683,10 @@ jobs:
               private void refreshSuggestions() {
                   if (candidateBar == null) return;
                   currentWord = passwordField ? "" : wordBeforeCursor();
-                  List<String> res = currentWord.isEmpty() || engine == null
-                          ? java.util.Collections.<String>emptyList()
-                          : engine.suggest(currentWord, lang(), 3);
+                  List<String> res;
+                  if (engine == null || passwordField) res = java.util.Collections.<String>emptyList();
+                  else if (!currentWord.isEmpty()) res = engine.suggest(currentWord, lang(), 3);
+                  else res = nextWordPredictions();
                   // Word is in no dictionary -> offer "+ word" in the right slot (one tap adds it to My dictionary)
                   String addWord = null;
                   if (!passwordField && engine != null && engine.dictsLoaded()) {
@@ -1453,6 +1749,19 @@ jobs:
                   return true;
               }
 
+              /** No word is being typed: suggest the next word by meaning (after a space or at the start). */
+              private List<String> nextWordPredictions() {
+                  InputConnection ic = getCurrentInputConnection();
+                  if (ic == null) return java.util.Collections.<String>emptyList();
+                  CharSequence q = ic.getTextBeforeCursor(64, 0);
+                  String before = q == null ? "" : q.toString();
+                  if (!before.isEmpty() && !Character.isWhitespace(before.charAt(before.length() - 1)))
+                      return java.util.Collections.<String>emptyList();      // right after a symbol: nothing to predict
+                  String prev = previousWord(before);
+                  boolean sentenceStart = before.trim().isEmpty() || before.replaceAll("\\s+$", "").matches("(?s).*[.!?…]$");
+                  return engine.predict(sentenceStart ? null : prev, lang(), 3, sentenceStart);
+              }
+
               private void pickSuggestion(int idx) {
                   Object tag = slots[idx].getTag();
                   if (tag instanceof AddTag) {
@@ -1466,13 +1775,19 @@ jobs:
                   InputConnection ic = getCurrentInputConnection();
                   if (ic == null) return;
                   String typed = wordBeforeCursor();
+                  CharSequence beforeQ = ic.getTextBeforeCursor(64, 0);
+                  String before = beforeQ == null ? "" : beforeQ.toString();
+                  String prev = previousWord(before.substring(0, Math.max(0, before.length() - typed.length())));
                   CharSequence after = ic.getTextAfterCursor(1, 0);
-                  boolean spaceAfter = after != null && after.length() > 0 && Character.isWhitespace(after.charAt(0));
+                  boolean spaceAfter = after != null && after.length() > 0 && after.charAt(0) == ' ';
                   ic.beginBatchEdit();
                   if (!typed.isEmpty()) ic.deleteSurroundingText(typed.length(), 0);
-                  ic.commitText(spaceAfter ? word : word + " ", 1);
+                  if (spaceAfter) ic.deleteSurroundingText(0, 1);     // reuse the existing space: cursor ends up after it
+                  ic.commitText(word + " ", 1);                      // a space always goes right after the suggestion
                   ic.endBatchEdit();
+                  autoSpaced = true;
                   engine.learn(word, 3);
+                  if (prev != null) engine.learnPair(prev, word);
                   refreshSuggestions();
               }
 
@@ -1483,6 +1798,7 @@ jobs:
                       if (sel != null && sel.length() > 0) ic.commitText("", 1);
                       else ic.deleteSurroundingText(1, 0);
                   }
+                  autoSpaced = false;
                   refreshSuggestions();
               }
 
@@ -1527,6 +1843,173 @@ jobs:
                   return null;
               }
           }
+          EOF_TCK
+          cat > 'TitanCustomKeyboard/app/src/main/assets/bigrams_en.txt' <<'EOF_TCK'
+          # prev: next words (most likely first). "*" = start of a sentence / empty field
+          *: I hi thanks ok yes the we it can how what sure
+          hi: there how
+          hello: there how
+          how: are is about much was long many
+          are: you we they
+          you: are can have know want doing
+          thank: you
+          thanks: for a so
+          good: morning night luck day evening
+          see: you
+          i: am will think have can don't know want just love
+          i'm: not going sure on so
+          it: is was will
+          is: it the a not
+          what: are is time do about
+          where: are is
+          when: are is will
+          can: you we i
+          do: you not
+          don't: know worry
+          let: me us
+          let's: go do
+          will: be do
+          going: to
+          want: to
+          have: a to you been
+          on: my the the way
+          in: the a
+          of: the course
+          for: the you a
+          to: the be do go
+          at: the home work
+          the: same best way
+          see: you
+          talk: to soon later
+          love: you
+          miss: you
+          call: me you
+          no: problem worries
+          of: course
+          by: the
+          happy: birthday new
+          sounds: good great
+          EOF_TCK
+          cat > 'TitanCustomKeyboard/app/src/main/assets/bigrams_ru.txt' <<'EOF_TCK'
+          # prev: next words (most likely first). "*" = start of a sentence / empty field
+          *: я привет как да спасибо хорошо ок а что это давай можно
+          привет: как всем ещё
+          как: дела ты вы у сам насчёт будто только всегда
+          дела: у как
+          у: меня тебя нас вас него неё них
+          меня: есть нет всё зовут не
+          спасибо: большое тебе вам за огромное
+          большое: спасибо
+          доброе: утро
+          добрый: день вечер
+          доброй: ночи
+          спокойной: ночи
+          хорошего: дня вечера
+          с: днём тобой вами утра праздником новым меня
+          днём: рождения
+          до: свидания завтра встречи вечера связи
+          я: тебя не думаю буду хочу могу знаю уже сейчас скоро понял тоже люблю
+          ты: где как можешь не сможешь знаешь сейчас уже дома
+          вы: можете не где сможете
+          мы: с можем будем уже не
+          что: ты делаешь случилось за это там нужно такое
+          где: ты вы находишься
+          когда: ты будешь сможешь будет
+          почему: ты не так
+          сколько: стоит это времени
+          это: не очень было будет так всё
+          не: знаю могу понял надо волнуйся за так
+          всё: хорошо нормально будет понятно отлично в равно
+          очень: хорошо приятно нужно жаль много
+          можно: ли я тебя
+          давай: завтра потом встретимся созвонимся
+          на: связи работе месте завтра выходных этой неделе сегодня
+          в: городе пути офисе понедельник порядке смысле принципе общем
+          по: дороге пути делу поводу
+          скоро: буду
+          буду: через дома на рад
+          через: минут час пять десять полчаса
+          напиши: мне когда пожалуйста
+          позвони: мне когда пожалуйста
+          сегодня: вечером утром днём
+          завтра: утром вечером днём
+          только: что сейчас
+          уже: еду иду дома всё
+          еду: домой
+          иду: домой
+          так: и что же как
+          и: я ты мы всё так
+          но: я ты это
+          если: что ты нужно будет
+          есть: время вопрос
+          нет: проблем спасибо пока
+          пока: что нет
+          ок: спасибо понял
+          да: конечно спасибо хорошо
+          конечно: да
+          люблю: тебя
+          тебя: люблю
+          жду: тебя ответа
+          хочу: сказать спросить
+          могу: ли я
+          EOF_TCK
+          cat > 'TitanCustomKeyboard/app/src/main/assets/bigrams_uk.txt' <<'EOF_TCK'
+          # prev: next words (most likely first). "*" = start of a sentence / empty field
+          *: я привіт як так дякую добре ок а що це давай можна
+          привіт: як всім ще
+          як: справи ти ви у сам щодо завжди
+          справи: у
+          у: мене тебе нас вас нього неї них
+          мене: є немає все звати не
+          дякую: тобі вам дуже за
+          дуже: дякую добре приємно потрібно шкода
+          доброго: ранку дня вечора
+          добрий: день вечір
+          на: добраніч зв'язку роботі місці завтра вихідних цьому тижні
+          гарного: дня вечора
+          з: днем тобою вами ранку святом новим мене
+          днем: народження
+          до: побачення завтра зустрічі вечора
+          я: тебе не думаю буду хочу можу знаю вже зараз скоро зрозумів теж кохаю
+          ти: де як можеш не зможеш знаєш зараз вже вдома
+          ви: можете не де зможете
+          ми: з можемо будемо вже не
+          що: ти робиш сталося за це там треба
+          де: ти ви
+          коли: ти будеш зможеш буде
+          чому: ти не так
+          скільки: коштує це часу
+          це: не дуже було буде так все
+          не: знаю можу зрозумів треба хвилюйся
+          все: добре нормально буде зрозуміло чудово
+          можна: я тебе
+          давай: завтра потім зустрінемося зідзвонимося
+          в: місті дорозі офісі понеділок порядку принципі
+          по: дорозі справі
+          скоро: буду
+          буду: через вдома радий
+          через: хвилин годину п'ять десять півгодини
+          напиши: мені коли будь ласка
+          подзвони: мені коли будь ласка
+          будь: ласка
+          сьогодні: ввечері вранці вдень
+          завтра: вранці ввечері вдень
+          вже: їду йду вдома все
+          їду: додому
+          йду: додому
+          і: я ти ми все
+          але: я ти це
+          якщо: що ти треба буде
+          є: час питання
+          немає: проблем
+          ок: дякую зрозумів
+          так: звісно дякую добре
+          звісно: так
+          кохаю: тебе
+          тебе: кохаю
+          чекаю: тебе відповіді
+          хочу: сказати запитати
+          можу: я
           EOF_TCK
           cat > 'TitanCustomKeyboard/app/src/main/assets/dict_en.txt' <<'EOF_TCK'
           # frequency order, one word per line
@@ -5051,14 +5534,14 @@ jobs:
         run: gradle assembleDebug --no-daemon --stacktrace
       - uses: actions/upload-artifact@v4
         with:
-          name: TitanCustomKeyboard-0.8.0-apk
+          name: TitanCustomKeyboard-0.9.0-apk
           path: TitanCustomKeyboard/app/build/outputs/apk/debug/*.apk
       - name: Put APK into the repository (apk/)
         run: |
           mkdir -p apk
-          cp TitanCustomKeyboard/app/build/outputs/apk/debug/app-debug.apk apk/TitanCustomKeyboard-0.8.0.apk
+          cp TitanCustomKeyboard/app/build/outputs/apk/debug/app-debug.apk apk/TitanCustomKeyboard-0.9.0.apk
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add apk/TitanCustomKeyboard-0.8.0.apk
-          git commit -m "APK 0.8.0 [skip ci]" || echo "nothing to commit"
+          git add apk/TitanCustomKeyboard-0.9.0.apk
+          git commit -m "APK 0.9.0 [skip ci]" || echo "nothing to commit"
           git push
