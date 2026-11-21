@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="svc_desc">Key Tester: показывает нажатия аппаратной клавиатуры до того, как их перехватит клавиатура (IME). Ничего не блокирует и не сохраняет.</string>
+</resources>

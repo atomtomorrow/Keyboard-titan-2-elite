@@ -1,6 +1,8 @@
 package com.titan.keytester;
 
 import android.app.Activity;
+import android.content.Intent;
+import android.provider.Settings;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.os.Bundle;
@@ -32,7 +34,9 @@ public class MainActivity extends Activity {
     private static final long CHATTER_MS = 60;   // two DOWNs closer than this = suspicious
     private static final long SHORT_MS = 25;     // press shorter than this = suspicious
 
-    private TextView heldView, statsView, logView;
+    static volatile MainActivity instance;
+    private TextView heldView, statsView, logView, svcView;
+    private Button svcButton;
     private ScrollView logScroll;
 
     private final ArrayDeque<String> log = new ArrayDeque<>();
@@ -56,6 +60,14 @@ public class MainActivity extends Activity {
         hint.setText("Жми клавиши. Каждое нажатие = DOWN + UP. "
                 + "⚠ = потерян UP, дребезг (2 DOWN < " + CHATTER_MS + " мс) или слишком короткое (< " + SHORT_MS + " мс).");
         root.addView(hint);
+
+        svcView = text(15, Color.WHITE);
+        root.addView(svcView);
+        svcButton = new Button(this);
+        svcButton.setText("Включить службу Key Tester (Спец. возможности)");
+        svcButton.setFocusable(false);
+        svcButton.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
+        root.addView(svcButton);
 
         heldView = text(18, Color.YELLOW);
         heldView.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
@@ -86,7 +98,36 @@ public class MainActivity extends Activity {
 
         setContentView(root);
         root.requestFocus();
+        instance = this;
+        updateSvc();
         refresh();
+    }
+
+    @Override protected void onResume() { super.onResume(); instance = this; updateSvc(); }
+    @Override protected void onDestroy() { if (instance == this) instance = null; super.onDestroy(); }
+
+    static void notifyServiceState() {
+        MainActivity a = instance;
+        if (a != null) a.runOnUiThread(a::updateSvc);
+    }
+
+    private void updateSvc() {
+        if (svcView == null) return;
+        if (KeyService.running) {
+            svcView.setText("Служба: ВКЛ — видим сырые нажатия до клавиатуры (IME)");
+            svcView.setTextColor(Color.rgb(140, 255, 140));
+            svcButton.setVisibility(View.GONE);
+        } else {
+            svcView.setText("Служба: ВЫКЛ — клавиатура (IME) съедает нажатия, Shift не видно. Включи службу:");
+            svcView.setTextColor(Color.rgb(255, 120, 120));
+            svcButton.setVisibility(View.VISIBLE);
+        }
+    }
+
+    /** Raw events from the accessibility service (before IME). */
+    void onRawKey(KeyEvent e) {
+        final KeyEvent c = new KeyEvent(e);
+        runOnUiThread(() -> handle(c, "RAW"));
     }
 
     private TextView text(int sp, int color) {
@@ -102,7 +143,23 @@ public class MainActivity extends Activity {
     public boolean dispatchKeyEvent(KeyEvent e) {
         int code = e.getKeyCode();
         if (code == KeyEvent.KEYCODE_BACK) return super.dispatchKeyEvent(e);
+        if (KeyService.running) return true; // service already logs raw events
+        if (e.getAction() == KeyEvent.ACTION_MULTIPLE) {
+            addLog(fmt.format(new Date()) + " APP текст от IME: \"" + e.getCharacters() + "\" (не нажатие)");
+            refresh();
+            return true;
+        }
+        handle(e, "APP");
+        return true;
+    }
 
+    private void addLog(String line) {
+        log.addFirst(line);
+        while (log.size() > MAX_LOG) log.removeLast();
+    }
+
+    private void handle(KeyEvent e, String src) {
+        int code = e.getKeyCode();
         long now = SystemClock.uptimeMillis();
         int[] s = stats.get(code);
         if (s == null) { s = new int[5]; stats.put(code, s); }
@@ -141,17 +198,15 @@ public class MainActivity extends Activity {
         }
 
         InputDevice dev = e.getDevice();
-        String line = fmt.format(new Date()) + " " + act + " "
+        String line = fmt.format(new Date()) + " " + src + " " + act + " "
                 + KeyEvent.keyCodeToString(code).replace("KEYCODE_", "")
                 + " code=" + code + " scan=" + e.getScanCode()
                 + " meta=0x" + Integer.toHexString(e.getMetaState())
                 + (dev != null ? " dev=" + dev.getName() : "")
                 + flag;
 
-        log.addFirst(line);
-        while (log.size() > MAX_LOG) log.removeLast();
+        addLog(line);
         refresh();
-        return true; // consume everything except BACK
     }
 
     private void refresh() {
