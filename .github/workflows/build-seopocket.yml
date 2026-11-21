@@ -1,0 +1,2081 @@
+name: Build SEO Pocket
+on:
+  push:
+    paths:
+      - '.github/workflows/build-seopocket.yml'
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Write source (SeoPocket 1.0)
+        run: |
+          mkdir -p SeoPocket SeoPocket/app SeoPocket/app/src/main SeoPocket/app/src/main/java/com/ievhenii/seopocket SeoPocket/app/src/main/res/values
+          cat > 'SeoPocket/app/build.gradle' <<'EOF_TCK'
+          plugins { id 'com.android.application' }
+
+          android {
+              namespace 'com.ievhenii.seopocket'
+              compileSdk 35
+              defaultConfig {
+                  applicationId 'com.ievhenii.seopocket'
+                  minSdk 26
+                  targetSdk 35
+                  versionCode 1
+                  versionName '1.0'
+              }
+          }
+          EOF_TCK
+          cat > 'SeoPocket/app/src/main/AndroidManifest.xml' <<'EOF_TCK'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <application
+                  android:allowBackup="true"
+                  android:label="SEO Pocket"
+                  android:usesCleartextTraffic="true"
+                  android:theme="@style/AppTheme">
+                  <activity android:name=".MainActivity" android:exported="true"
+                      android:windowSoftInputMode="adjustResize" android:launchMode="singleTop">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                      <intent-filter>
+                          <action android:name="android.intent.action.SEND" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                          <data android:mimeType="text/plain" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF_TCK
+          cat > 'SeoPocket/app/src/main/java/com/ievhenii/seopocket/MainActivity.java' <<'EOF_TCK'
+          package com.ievhenii.seopocket;
+
+          import android.app.Activity;
+          import android.content.ClipData;
+          import android.content.ClipboardManager;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.graphics.Paint;
+          import android.graphics.Typeface;
+          import android.graphics.drawable.GradientDrawable;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.text.Editable;
+          import android.text.InputType;
+          import android.text.TextWatcher;
+          import android.util.TypedValue;
+          import android.view.Gravity;
+          import android.view.KeyEvent;
+          import android.view.View;
+          import android.view.WindowInsets;
+          import android.widget.Button;
+          import android.widget.CheckBox;
+          import android.widget.EditText;
+          import android.widget.FrameLayout;
+          import android.widget.HorizontalScrollView;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.TextView;
+          import android.widget.Toast;
+
+          import org.json.JSONArray;
+          import org.json.JSONObject;
+
+          import java.io.OutputStream;
+          import java.net.InetAddress;
+          import java.nio.charset.StandardCharsets;
+          import java.security.cert.Certificate;
+          import java.security.cert.X509Certificate;
+          import java.text.SimpleDateFormat;
+          import java.util.ArrayList;
+          import java.util.Collections;
+          import java.util.Comparator;
+          import java.util.Date;
+          import java.util.LinkedHashMap;
+          import java.util.LinkedHashSet;
+          import java.util.List;
+          import java.util.Locale;
+          import java.util.Map;
+          import java.util.concurrent.ExecutorService;
+          import java.util.concurrent.Executors;
+          import java.util.concurrent.atomic.AtomicInteger;
+
+          import javax.net.ssl.HttpsURLConnection;
+
+          public class MainActivity extends Activity {
+              // ---------------------------------------------------------------- palette
+              static final int C_BG = 0xFFF4F6FB, C_CARD = 0xFFFFFFFF, C_TEXT = 0xFF141A2A, C_SUB = 0xFF5C6577, C_ACCENT = 0xFF2E5BFF,
+                      C_OK = 0xFF16803C, C_WARN = 0xFFB25E00, C_BAD = 0xFFC62828, C_LINE = 0xFFE3E7EF;
+
+              static final String[] TABS = {"Ключи UA", "Аудит", "Массово", "Robots/Sitemap", "Домен", "Сниппет", "Инструменты", "Проекты", "Настройки"};
+              static final char[] TAB_KEYS = {'k', 'a', 'm', 'r', 'd', 's', 't', 'p', 'n'};
+
+              SharedPreferences prefs;
+              final ExecutorService pool = Executors.newFixedThreadPool(4);
+              LinearLayout tabBar;
+              FrameLayout content;
+              final View[] pages = new View[TABS.length];
+              final TextView[] tabViews = new TextView[TABS.length];
+              int currentTab = 0;
+
+              // ---------------------------------------------------------------- keyword collector state
+              static final class KW {
+                  final String text;
+                  final LinkedHashSet<String> src = new LinkedHashSet<>();
+                  int vol = -1, diff = -1;
+                  double cost = -1, comp = -1;
+                  final int order;
+                  KW(String t, int o) { text = t; order = o; }
+              }
+              final LinkedHashMap<String, KW> kws = new LinkedHashMap<>();
+              volatile boolean collecting = false, stopFlag = false;
+              EditText kwSeeds, kwMinus, kwFilter;
+              CheckBox cbUk, cbRu, cbGoogle, cbYoutube, cbBing, cbAlpha, cbQuest, cbComm, cbCities, cbPrefix, cbDepth;
+              TextView kwStatus, kwOut, kwSortLabel;
+              LinearLayout kwWords;
+              Button kwStart;
+              int kwSort = 0;   // 0 order, 1 volume, 2 a-z, 3 length
+              String wordFilter = null;
+
+              // audit
+              EditText auditUrl, auditKey;
+              TextView auditOut;
+
+              @Override protected void onCreate(Bundle b) {
+                  super.onCreate(b);
+                  prefs = getSharedPreferences("seo", MODE_PRIVATE);
+                  applySettings();
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setBackgroundColor(C_BG);
+                  root.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+                      @Override public WindowInsets onApplyWindowInsets(View v, WindowInsets in) {
+                          int top, bottom;
+                          if (Build.VERSION.SDK_INT >= 30) {
+                              android.graphics.Insets s = in.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.ime());
+                              top = s.top; bottom = s.bottom;
+                          } else { top = in.getSystemWindowInsetTop(); bottom = in.getSystemWindowInsetBottom(); }
+                          v.setPadding(0, top, 0, bottom);
+                          return in;
+                      }
+                  });
+
+                  LinearLayout header = new LinearLayout(this);
+                  header.setOrientation(LinearLayout.HORIZONTAL);
+                  header.setGravity(Gravity.CENTER_VERTICAL);
+                  header.setPadding(dp(14), dp(10), dp(14), dp(4));
+                  TextView logo = new TextView(this);
+                  logo.setText("SEO");
+                  logo.setTextColor(0xFFFFFFFF);
+                  logo.setTypeface(Typeface.DEFAULT_BOLD);
+                  logo.setTextSize(13);
+                  logo.setGravity(Gravity.CENTER);
+                  logo.setBackground(round(C_ACCENT, 8));
+                  header.addView(logo, new LinearLayout.LayoutParams(dp(40), dp(28)));
+                  TextView title = new TextView(this);
+                  title.setText("  Pocket");
+                  title.setTextSize(20);
+                  title.setTypeface(Typeface.DEFAULT_BOLD);
+                  title.setTextColor(C_TEXT);
+                  header.addView(title);
+                  TextView hint = new TextView(this);
+                  hint.setText("   K A M R D S T P N — вкладки");
+                  hint.setTextSize(11);
+                  hint.setTextColor(C_SUB);
+                  header.addView(hint);
+                  root.addView(header);
+
+                  HorizontalScrollView hs = new HorizontalScrollView(this);
+                  hs.setHorizontalScrollBarEnabled(false);
+                  tabBar = new LinearLayout(this);
+                  tabBar.setPadding(dp(10), dp(4), dp(10), dp(6));
+                  hs.addView(tabBar);
+                  root.addView(hs);
+                  for (int i = 0; i < TABS.length; i++) {
+                      final int idx = i;
+                      TextView t = new TextView(this);
+                      t.setText(TABS[i]);
+                      t.setTextSize(14);
+                      t.setPadding(dp(14), dp(7), dp(14), dp(7));
+                      t.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { showTab(idx); } });
+                      LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+                      lp.rightMargin = dp(6);
+                      tabBar.addView(t, lp);
+                      tabViews[i] = t;
+                  }
+                  content = new FrameLayout(this);
+                  root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
+                  setContentView(root);
+                  showTab(prefs.getInt("tab", 0));
+                  handleShare(getIntent());
+              }
+
+              @Override protected void onNewIntent(Intent i) { super.onNewIntent(i); handleShare(i); }
+
+              /** "Share" a link from the browser to SEO Pocket -> audit it right away. */
+              void handleShare(Intent i) {
+                  if (i == null || !Intent.ACTION_SEND.equals(i.getAction())) return;
+                  String t = i.getStringExtra(Intent.EXTRA_TEXT);
+                  if (t == null) return;
+                  java.util.regex.Matcher m = java.util.regex.Pattern.compile("https?://\\S+").matcher(t);
+                  if (!m.find()) return;
+                  showTab(1);
+                  auditUrl.setText(m.group());
+                  runAudit();
+              }
+
+              @Override public boolean dispatchKeyEvent(KeyEvent e) {
+                  View f = getCurrentFocus();
+                  if (e.getAction() == KeyEvent.ACTION_DOWN && !(f instanceof EditText) && !e.isAltPressed() && !e.isCtrlPressed()) {
+                      int code = e.getKeyCode();
+                      if (code >= KeyEvent.KEYCODE_A && code <= KeyEvent.KEYCODE_Z) {
+                          char c = (char) ('a' + code - KeyEvent.KEYCODE_A);
+                          for (int i = 0; i < TAB_KEYS.length; i++) if (TAB_KEYS[i] == c) { showTab(i); return true; }
+                      }
+                  }
+                  return super.dispatchKeyEvent(e);
+              }
+
+              void showTab(int i) {
+                  if (i < 0 || i >= TABS.length) i = 0;
+                  currentTab = i;
+                  prefs.edit().putInt("tab", i).apply();
+                  for (int k = 0; k < TABS.length; k++) {
+                      boolean on = k == i;
+                      tabViews[k].setTextColor(on ? 0xFFFFFFFF : C_TEXT);
+                      tabViews[k].setTypeface(on ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+                      tabViews[k].setBackground(round(on ? C_ACCENT : 0xFFE6EAF3, 16));
+                  }
+                  if (pages[i] == null) pages[i] = buildPage(i);
+                  content.removeAllViews();
+                  content.addView(pages[i], new FrameLayout.LayoutParams(-1, -1));
+              }
+
+              View buildPage(int i) {
+                  ScrollView sv = new ScrollView(this);
+                  sv.setFillViewport(true);
+                  LinearLayout p = new LinearLayout(this);
+                  p.setOrientation(LinearLayout.VERTICAL);
+                  p.setPadding(dp(12), dp(4), dp(12), dp(24));
+                  sv.addView(p);
+                  switch (i) {
+                      case 0: pageKeywords(p); break;
+                      case 1: pageAudit(p); break;
+                      case 2: pageBulk(p); break;
+                      case 3: pageRobots(p); break;
+                      case 4: pageDomain(p); break;
+                      case 5: pageSnippet(p); break;
+                      case 6: pageTools(p); break;
+                      case 7: pageProjects(p); break;
+                      default: pageSettings(p); break;
+                  }
+                  return sv;
+              }
+
+              // ================================================================ UI helpers
+              int dp(float v) { return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics()); }
+
+              GradientDrawable round(int color, int r) {
+                  GradientDrawable g = new GradientDrawable();
+                  g.setColor(color);
+                  g.setCornerRadius(dp(r));
+                  return g;
+              }
+
+              LinearLayout card(LinearLayout parent, String title, String sub) {
+                  LinearLayout c = new LinearLayout(this);
+                  c.setOrientation(LinearLayout.VERTICAL);
+                  c.setBackground(round(C_CARD, 14));
+                  c.setPadding(dp(12), dp(10), dp(12), dp(12));
+                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+                  lp.topMargin = dp(8);
+                  parent.addView(c, lp);
+                  if (title != null) {
+                      TextView t = text(title, 16, C_TEXT, true);
+                      c.addView(t);
+                  }
+                  if (sub != null) {
+                      TextView s = text(sub, 12, C_SUB, false);
+                      s.setPadding(0, dp(2), 0, dp(6));
+                      c.addView(s);
+                  }
+                  return c;
+              }
+
+              TextView text(String s, int sp, int color, boolean bold) {
+                  TextView t = new TextView(this);
+                  t.setText(s);
+                  t.setTextSize(sp);
+                  t.setTextColor(color);
+                  if (bold) t.setTypeface(Typeface.DEFAULT_BOLD);
+                  return t;
+              }
+
+              EditText input(LinearLayout parent, String hint, boolean multi, String prefKey) {
+                  EditText e = new EditText(this);
+                  e.setHint(hint);
+                  e.setTextSize(15);
+                  e.setTextColor(C_TEXT);
+                  int type = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
+                  if (multi) { type |= InputType.TYPE_TEXT_FLAG_MULTI_LINE; e.setMinLines(3); e.setGravity(Gravity.TOP | Gravity.START); }
+                  else e.setSingleLine(true);
+                  e.setInputType(type);
+                  if (prefKey != null) {
+                      e.setText(prefs.getString(prefKey, ""));
+                      final String k = prefKey;
+                      e.addTextChangedListener(new SimpleWatcher() { @Override public void afterTextChanged(Editable s) { prefs.edit().putString(k, s.toString()).apply(); } });
+                  }
+                  parent.addView(e, new LinearLayout.LayoutParams(-1, -2));
+                  return e;
+              }
+
+              Button button(LinearLayout parent, String label, View.OnClickListener l) {
+                  Button b = new Button(this);
+                  b.setText(label);
+                  b.setAllCaps(false);
+                  b.setTextSize(14);
+                  b.setOnClickListener(l);
+                  parent.addView(b, new LinearLayout.LayoutParams(-2, -2));
+                  return b;
+              }
+
+              LinearLayout row(LinearLayout parent) {
+                  LinearLayout r = new LinearLayout(this);
+                  r.setOrientation(LinearLayout.HORIZONTAL);
+                  r.setGravity(Gravity.CENTER_VERTICAL);
+                  parent.addView(r, new LinearLayout.LayoutParams(-1, -2));
+                  return r;
+              }
+
+              /** A horizontally scrolling row of buttons (fits the small square screen). */
+              LinearLayout buttonRow(LinearLayout parent) {
+                  HorizontalScrollView hs = new HorizontalScrollView(this);
+                  hs.setHorizontalScrollBarEnabled(false);
+                  LinearLayout r = new LinearLayout(this);
+                  hs.addView(r);
+                  parent.addView(hs, new LinearLayout.LayoutParams(-1, -2));
+                  return r;
+              }
+
+              CheckBox check(LinearLayout parent, String label, String key, boolean def) {
+                  CheckBox c = new CheckBox(this);
+                  c.setText(label);
+                  c.setTextSize(14);
+                  c.setTextColor(C_TEXT);
+                  c.setChecked(prefs.getBoolean(key, def));
+                  final String k = key;
+                  c.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+                      @Override public void onCheckedChanged(android.widget.CompoundButton b, boolean on) { prefs.edit().putBoolean(k, on).apply(); }
+                  });
+                  parent.addView(c, new LinearLayout.LayoutParams(-2, -2));
+                  return c;
+              }
+
+              TextView output(LinearLayout parent) {
+                  TextView t = new TextView(this);
+                  t.setTextSize(13);
+                  t.setTextColor(C_TEXT);
+                  t.setTypeface(Typeface.MONOSPACE);
+                  t.setTextIsSelectable(true);
+                  t.setPadding(dp(8), dp(8), dp(8), dp(8));
+                  t.setBackground(round(0xFFF7F8FC, 10));
+                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+                  lp.topMargin = dp(6);
+                  parent.addView(t, lp);
+                  return t;
+              }
+
+              abstract static class SimpleWatcher implements TextWatcher {
+                  @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
+                  @Override public void onTextChanged(CharSequence s, int a, int b, int c) { }
+              }
+
+              void bg(Runnable r) { pool.execute(r); }
+              void ui(Runnable r) { runOnUiThread(r); }
+              void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
+
+              void copy(String s) {
+                  ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                  cm.setPrimaryClip(ClipData.newPlainText("SEO Pocket", s));
+                  toast("Скопировано");
+              }
+
+              void share(String s, String subject) {
+                  Intent i = new Intent(Intent.ACTION_SEND);
+                  i.setType("text/plain");
+                  i.putExtra(Intent.EXTRA_SUBJECT, subject);
+                  i.putExtra(Intent.EXTRA_TEXT, s);
+                  startActivity(Intent.createChooser(i, "Отправить"));
+              }
+
+              void open(String url) {
+                  try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url))); } catch (Exception e) { toast("Нет браузера"); }
+              }
+
+              String pendingSave;
+              static final int REQ_SAVE = 4101;
+
+              void saveFile(String name, String mime, String data) {
+                  pendingSave = data;
+                  Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                  i.addCategory(Intent.CATEGORY_OPENABLE);
+                  i.setType(mime);
+                  i.putExtra(Intent.EXTRA_TITLE, name);
+                  startActivityForResult(i, REQ_SAVE);
+              }
+
+              @Override protected void onActivityResult(int req, int res, Intent data) {
+                  super.onActivityResult(req, res, data);
+                  if (req != REQ_SAVE || res != RESULT_OK || data == null || data.getData() == null || pendingSave == null) return;
+                  try (OutputStream os = getContentResolver().openOutputStream(data.getData())) {
+                      if (os == null) throw new Exception("нет доступа");
+                      os.write(new byte[]{(byte) 0xEF, (byte) 0xBB, (byte) 0xBF});   // BOM: Excel opens Cyrillic correctly
+                      os.write(pendingSave.getBytes(StandardCharsets.UTF_8));
+                      toast("Файл сохранён");
+                  } catch (Exception e) { toast("Ошибка: " + e.getMessage()); }
+                  pendingSave = null;
+              }
+
+              void applySettings() {
+                  int ua = prefs.getInt("ua", 0);
+                  Net.userAgent = ua == 1 ? Net.UA_DESKTOP : ua == 2 ? Net.UA_GOOGLEBOT : Net.UA_MOBILE;
+                  Net.timeoutMs = prefs.getInt("timeout", 15) * 1000;
+              }
+
+              static String kb(long bytes) { return bytes < 1024 ? bytes + " Б" : String.format(Locale.ROOT, "%.1f КБ", bytes / 1024.0); }
+
+              // ================================================================ 1. KEYWORDS (Ukraine)
+              void pageKeywords(LinearLayout p) {
+                  LinearLayout c = card(p, "Сбор ключей по Украине", "Подсказки Google, YouTube и Bing для региона UA. Каждая фраза расширяется модификаторами — получаются сотни реальных запросов.");
+                  kwSeeds = input(c, "Ключевые фразы, по одной в строке", true, "kwSeeds");
+                  TextView l1 = text("Язык подсказок", 13, C_SUB, true); l1.setPadding(0, dp(6), 0, 0); c.addView(l1);
+                  LinearLayout r1 = row(c);
+                  cbUk = check(r1, "Українська", "kwUk", true);
+                  cbRu = check(r1, "Русский", "kwRu", true);
+                  TextView l2 = text("Источники", 13, C_SUB, true); c.addView(l2);
+                  LinearLayout r2 = row(c);
+                  cbGoogle = check(r2, "Google", "kwG", true);
+                  cbYoutube = check(r2, "YouTube", "kwY", false);
+                  cbBing = check(r2, "Bing", "kwB", false);
+                  TextView l3 = text("Расширение", 13, C_SUB, true); c.addView(l3);
+                  cbAlpha = check(c, "Алфавит: фраза + а…я, a…z, 0…9", "kwAlpha", true);
+                  cbPrefix = check(c, "…и буква перед фразой", "kwPrefix", false);
+                  cbQuest = check(c, "Вопросы: як / що / де / скільки / как / сколько…", "kwQuest", true);
+                  cbComm = check(c, "Коммерция: купити, ціна, відгуки, доставка…", "kwComm", true);
+                  cbCities = check(c, "Города Украины: Київ, Львів, Одеса, Дніпро…", "kwCities", false);
+                  cbDepth = check(c, "Глубина 2: расширить 50 найденных фраз", "kwDepth", false);
+                  kwMinus = input(c, "Минус-слова через пробел или запятую (бесплатно, скачать, бу…)", false, "kwMinus");
+                  LinearLayout br = buttonRow(c);
+                  kwStart = button(br, "▶ Собрать", new View.OnClickListener() { @Override public void onClick(View v) { toggleCollect(); } });
+                  button(br, "Оценить объём", new View.OnClickListener() { @Override public void onClick(View v) { toast("Будет запросов: ≈" + estimateRequests()); } });
+                  kwStatus = text("Готово к сбору", 13, C_SUB, false);
+                  c.addView(kwStatus);
+
+                  LinearLayout res = card(p, "Результаты", null);
+                  kwFilter = input(res, "Фильтр по слову…", false, null);
+                  kwFilter.addTextChangedListener(new SimpleWatcher() { @Override public void afterTextChanged(Editable s) { renderKeywords(); } });
+                  LinearLayout sr = buttonRow(res);
+                  kwSortLabel = text("", 12, C_SUB, false);
+                  button(sr, "Сортировка", new View.OnClickListener() { @Override public void onClick(View v) { kwSort = (kwSort + 1) % 4; renderKeywords(); } });
+                  button(sr, "Частотность Serpstat", new View.OnClickListener() { @Override public void onClick(View v) { serpstatVolumes(); } });
+                  button(sr, "Копировать", new View.OnClickListener() { @Override public void onClick(View v) { copy(keywordsPlain()); } });
+                  button(sr, "CSV → файл", new View.OnClickListener() { @Override public void onClick(View v) { saveFile("keywords-ua.csv", "text/csv", keywordsCsv()); } });
+                  button(sr, "Поделиться", new View.OnClickListener() { @Override public void onClick(View v) { share(keywordsCsv(), "Ключи"); } });
+                  button(sr, "Сохранить сбор", new View.OnClickListener() { @Override public void onClick(View v) { saveCollection(); } });
+                  button(sr, "Очистить", new View.OnClickListener() { @Override public void onClick(View v) { kws.clear(); wordFilter = null; renderKeywords(); } });
+                  res.addView(kwSortLabel);
+                  TextView wl = text("Частые слова (нажми — отфильтровать, ещё раз — снять):", 12, C_SUB, false);
+                  wl.setPadding(0, dp(6), 0, dp(2));
+                  res.addView(wl);
+                  HorizontalScrollView whs = new HorizontalScrollView(this);
+                  kwWords = new LinearLayout(this);
+                  whs.addView(kwWords);
+                  res.addView(whs);
+                  kwOut = output(res);
+                  renderKeywords();
+              }
+
+              List<String> seeds() {
+                  List<String> s = new ArrayList<>();
+                  for (String line : kwSeeds.getText().toString().split("\\n")) if (!line.trim().isEmpty()) s.add(line.trim());
+                  return s;
+              }
+
+              List<String> minusWords() {
+                  List<String> m = new ArrayList<>();
+                  for (String w : kwMinus.getText().toString().split("[,;\\n]+|\\s+")) if (!w.trim().isEmpty()) m.add(w.trim());
+                  return m;
+              }
+
+              List<String> langs() {
+                  List<String> l = new ArrayList<>();
+                  if (cbUk.isChecked()) l.add("uk");
+                  if (cbRu.isChecked()) l.add("ru");
+                  if (l.isEmpty()) l.add("uk");
+                  return l;
+              }
+
+              List<String> sources() {
+                  List<String> s = new ArrayList<>();
+                  if (cbGoogle.isChecked()) s.add("google");
+                  if (cbYoutube.isChecked()) s.add("youtube");
+                  if (cbBing.isChecked()) s.add("bing");
+                  if (s.isEmpty()) s.add("google");
+                  return s;
+              }
+
+              int estimateRequests() {
+                  int n = 0;
+                  for (String s : seeds()) n += SeoCore.buildQueries(s, cbUk.isChecked(), cbRu.isChecked(), cbAlpha.isChecked(), cbQuest.isChecked(),
+                          cbComm.isChecked(), cbCities.isChecked(), cbPrefix.isChecked()).size();
+                  int perQuery = 0;
+                  for (String src : sources()) perQuery += src.equals("bing") ? 1 : langs().size();
+                  n *= perQuery;
+                  if (cbDepth.isChecked()) n += 50 * perQuery;
+                  return n;
+              }
+
+              void toggleCollect() {
+                  if (collecting) { stopFlag = true; kwStart.setText("▶ Собрать"); return; }
+                  final List<String> seeds = seeds();
+                  if (seeds.isEmpty()) { toast("Введите хотя бы одну фразу"); return; }
+                  final List<String> minus = minusWords(), langs = langs(), sources = sources();
+                  final boolean uk = cbUk.isChecked(), ru = cbRu.isChecked(), alpha = cbAlpha.isChecked(), quest = cbQuest.isChecked(),
+                          comm = cbComm.isChecked(), cities = cbCities.isChecked(), prefix = cbPrefix.isChecked(), depth = cbDepth.isChecked();
+                  final int delay = prefs.getInt("delay", 150);
+                  final int total = estimateRequests();
+                  collecting = true;
+                  stopFlag = false;
+                  kwStart.setText("■ Стоп");
+                  new Thread(new Runnable() {
+                      @Override public void run() {
+                          AtomicInteger done = new AtomicInteger();
+                          List<String> fresh = new ArrayList<>();
+                          try {
+                              for (String seed : seeds) {
+                                  for (String q : SeoCore.buildQueries(seed, uk, ru, alpha, quest, comm, cities, prefix)) {
+                                      for (String src : sources) for (String lang : src.equals("bing") ? Collections.singletonList("uk") : langs) {
+                                          if (stopFlag) return;
+                                          List<String> got = Net.suggest(src, q, lang);
+                                          addKeywords(got, src, minus, fresh);
+                                          progress(done.incrementAndGet(), total);
+                                          sleep(delay);
+                                      }
+                                  }
+                              }
+                              if (depth) {
+                                  List<String> more = new ArrayList<>(fresh.subList(0, Math.min(50, fresh.size())));
+                                  for (String q : more) for (String src : sources) for (String lang : src.equals("bing") ? Collections.singletonList("uk") : langs) {
+                                      if (stopFlag) return;
+                                      addKeywords(Net.suggest(src, q + " ", lang), src, minus, null);
+                                      progress(done.incrementAndGet(), total);
+                                      sleep(delay);
+                                  }
+                              }
+                          } finally {
+                              collecting = false;
+                              ui(new Runnable() { @Override public void run() {
+                                  kwStart.setText("▶ Собрать");
+                                  kwStatus.setText((stopFlag ? "Остановлено. " : "Готово. ") + "Найдено фраз: " + kws.size());
+                                  renderKeywords();
+                              } });
+                          }
+                      }
+                  }).start();
+              }
+
+              static void sleep(int ms) { try { Thread.sleep(ms); } catch (InterruptedException ignored) { } }
+
+              void addKeywords(List<String> got, String src, List<String> minus, List<String> fresh) {
+                  synchronized (kws) {
+                      for (String g : got) {
+                          String k = SeoCore.normKeyword(g);
+                          if (k.isEmpty() || SeoCore.hasMinus(k, minus)) continue;
+                          KW kw = kws.get(k);
+                          if (kw == null) { kw = new KW(k, kws.size()); kws.put(k, kw); if (fresh != null) fresh.add(k); }
+                          kw.src.add(src.equals("google") ? "G" : src.equals("youtube") ? "Y" : "B");
+                      }
+                  }
+              }
+
+              long lastRender = 0;
+              void progress(final int done, final int total) {
+                  long now = System.currentTimeMillis();
+                  if (now - lastRender < 700 && done < total) return;
+                  lastRender = now;
+                  ui(new Runnable() { @Override public void run() {
+                      kwStatus.setText("Запросов " + done + " / ~" + total + " · найдено " + kws.size());
+                      renderKeywords();
+                  } });
+              }
+
+              List<KW> visibleKeywords() {
+                  List<KW> list;
+                  synchronized (kws) { list = new ArrayList<>(kws.values()); }
+                  String f = kwFilter == null ? "" : SeoCore.normKeyword(kwFilter.getText().toString());
+                  List<KW> out = new ArrayList<>();
+                  for (KW k : list) {
+                      if (!f.isEmpty() && !k.text.contains(f)) continue;
+                      if (wordFilter != null && !(" " + k.text + " ").contains(" " + wordFilter)) continue;
+                      out.add(k);
+                  }
+                  Comparator<KW> cmp;
+                  switch (kwSort) {
+                      case 1: cmp = new Comparator<KW>() { @Override public int compare(KW a, KW b) { return b.vol - a.vol; } }; break;
+                      case 2: cmp = new Comparator<KW>() { @Override public int compare(KW a, KW b) { return a.text.compareTo(b.text); } }; break;
+                      case 3: cmp = new Comparator<KW>() { @Override public int compare(KW a, KW b) { return a.text.length() - b.text.length(); } }; break;
+                      default: cmp = new Comparator<KW>() { @Override public int compare(KW a, KW b) { return a.order - b.order; } };
+                  }
+                  Collections.sort(out, cmp);
+                  return out;
+              }
+
+              void renderKeywords() {
+                  if (kwOut == null) return;
+                  List<KW> list = visibleKeywords();
+                  String[] sorts = {"порядок сбора", "частотность", "А–Я", "длина"};
+                  kwSortLabel.setText("Показано " + list.size() + " из " + kws.size() + " · сортировка: " + sorts[kwSort]
+                          + (wordFilter != null ? " · слово: «" + wordFilter + "»" : ""));
+                  StringBuilder sb = new StringBuilder();
+                  int shown = 0;
+                  for (KW k : list) {
+                      if (shown++ >= 3000) { sb.append("… ещё ").append(list.size() - 3000).append(" (полный список — в CSV)\n"); break; }
+                      sb.append(k.text);
+                      if (k.vol >= 0) sb.append("  ·  ").append(k.vol);
+                      if (k.cost >= 0) sb.append("  ·  $").append(String.format(Locale.ROOT, "%.2f", k.cost));
+                      if (k.diff >= 0) sb.append("  ·  KD ").append(k.diff);
+                      sb.append("  [").append(join(k.src, "")).append("]\n");
+                  }
+                  kwOut.setText(list.isEmpty() ? "Пока пусто" : sb.toString());
+                  // frequent words
+                  kwWords.removeAllViews();
+                  List<String> texts = new ArrayList<>();
+                  for (KW k : list) texts.add(k.text);
+                  for (Map.Entry<String, Integer> e : SeoCore.topWords(texts, 25, seeds())) {
+                      final String w = e.getKey();
+                      TextView chip = text(w + " " + e.getValue(), 13, w.equals(wordFilter) ? 0xFFFFFFFF : C_ACCENT, false);
+                      chip.setPadding(dp(10), dp(5), dp(10), dp(5));
+                      chip.setBackground(round(w.equals(wordFilter) ? C_ACCENT : 0xFFE8EDFF, 14));
+                      chip.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
+                          wordFilter = w.equals(wordFilter) ? null : w;
+                          renderKeywords();
+                      } });
+                      LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+                      lp.rightMargin = dp(5);
+                      kwWords.addView(chip, lp);
+                  }
+              }
+
+              static String join(Iterable<String> items, String sep) {
+                  StringBuilder sb = new StringBuilder();
+                  for (String s : items) { if (sb.length() > 0) sb.append(sep); sb.append(s); }
+                  return sb.toString();
+              }
+
+              String keywordsPlain() {
+                  StringBuilder sb = new StringBuilder();
+                  for (KW k : visibleKeywords()) sb.append(k.text).append('\n');
+                  return sb.toString();
+              }
+
+              String keywordsCsv() {
+                  StringBuilder sb = new StringBuilder("Ключ;Частотность (UA);CPC $;Сложность;Конкуренция;Источники\n");
+                  for (KW k : visibleKeywords()) {
+                      sb.append(SeoCore.csvCell(k.text)).append(';')
+                              .append(k.vol >= 0 ? k.vol : "").append(';')
+                              .append(k.cost >= 0 ? String.format(Locale.ROOT, "%.2f", k.cost) : "").append(';')
+                              .append(k.diff >= 0 ? k.diff : "").append(';')
+                              .append(k.comp >= 0 ? String.format(Locale.ROOT, "%.2f", k.comp) : "").append(';')
+                              .append(join(k.src, "")).append('\n');
+                  }
+                  return sb.toString();
+              }
+
+              /** Serpstat API v4, database g_ua (Google Ukraine). Needs the user's own token (Settings). */
+              void serpstatVolumes() {
+                  final String token = prefs.getString("serpToken", "").trim();
+                  if (token.isEmpty()) { toast("Укажите токен Serpstat во вкладке «Настройки»"); showTab(8); return; }
+                  final List<KW> list = visibleKeywords();
+                  if (list.isEmpty()) { toast("Нет ключей"); return; }
+                  final String se = prefs.getString("serpSe", "g_ua").trim().isEmpty() ? "g_ua" : prefs.getString("serpSe", "g_ua").trim();
+                  kwStatus.setText("Serpstat: запрашиваю частотность для " + list.size() + " фраз…");
+                  bg(new Runnable() { @Override public void run() {
+                      int ok = 0;
+                      String err = null;
+                      for (int i = 0; i < list.size(); i += 50) {
+                          List<KW> part = list.subList(i, Math.min(list.size(), i + 50));
+                          try {
+                              JSONArray arr = new JSONArray();
+                              for (KW k : part) arr.put(k.text);
+                              JSONObject params = new JSONObject();
+                              params.put("keywords", arr);
+                              params.put("se", se);
+                              JSONObject req = new JSONObject();
+                              req.put("id", "1");
+                              req.put("method", "SerpstatKeywordProcedure.getKeywordsInfo");
+                              req.put("params", params);
+                              Net.Resp r = Net.fetch("https://api.serpstat.com/v4/?token=" + Net.enc(token), true, 4 * 1024 * 1024, req.toString());
+                              if (r.body == null) { err = r.error != null ? r.error : "HTTP " + r.code; break; }
+                              JSONObject js = new JSONObject(r.body);
+                              if (js.has("error")) { err = js.getJSONObject("error").optString("message", "ошибка API"); break; }
+                              JSONObject result = js.optJSONObject("result");
+                              JSONArray data = result == null ? null : result.optJSONArray("data");
+                              if (data == null) continue;
+                              for (int j = 0; j < data.length(); j++) {
+                                  JSONObject d = data.getJSONObject(j);
+                                  String key = SeoCore.normKeyword(d.optString("keyword", ""));
+                                  KW kw;
+                                  synchronized (kws) { kw = kws.get(key); }
+                                  if (kw == null) continue;
+                                  kw.vol = d.optInt("region_queries_count", d.optInt("volume", -1));
+                                  kw.cost = d.optDouble("cost", -1);
+                                  kw.diff = d.isNull("difficulty") ? -1 : d.optInt("difficulty", -1);
+                                  kw.comp = d.optDouble("concurrency", -1);
+                                  ok++;
+                              }
+                          } catch (Exception e) { err = e.getMessage(); break; }
+                      }
+                      final int got = ok; final String error = err;
+                      ui(new Runnable() { @Override public void run() {
+                          kwSort = 1;
+                          kwStatus.setText("Serpstat: частотность получена для " + got + " фраз" + (error != null ? " · ошибка: " + error : ""));
+                          renderKeywords();
+                      } });
+                  } });
+              }
+
+              void saveCollection() {
+                  if (kws.isEmpty()) { toast("Нечего сохранять"); return; }
+                  try {
+                      JSONArray all = new JSONArray(prefs.getString("collections", "[]"));
+                      JSONObject o = new JSONObject();
+                      List<String> s = seeds();
+                      o.put("name", s.isEmpty() ? "Сбор" : s.get(0) + (s.size() > 1 ? " +" + (s.size() - 1) : ""));
+                      o.put("date", new SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.ROOT).format(new Date()));
+                      o.put("csv", keywordsCsv());
+                      o.put("count", visibleKeywords().size());
+                      JSONArray next = new JSONArray();
+                      next.put(o);
+                      for (int i = 0; i < all.length() && i < 19; i++) next.put(all.get(i));
+                      prefs.edit().putString("collections", next.toString()).apply();
+                      toast("Сбор сохранён — вкладка «Проекты»");
+                      if (pages[7] != null) { pages[7] = null; }
+                  } catch (Exception e) { toast("Ошибка: " + e.getMessage()); }
+              }
+
+              void loadCollection(String csv) {
+                  synchronized (kws) {
+                      kws.clear();
+                      String[] lines = csv.split("\\n");
+                      for (int i = 1; i < lines.length; i++) {
+                          String[] c = lines[i].split(";", -1);
+                          if (c.length < 1 || c[0].isEmpty()) continue;
+                          String key = c[0].replaceAll("^\"|\"$", "");
+                          KW k = new KW(key, kws.size());
+                          try { if (c.length > 1 && !c[1].isEmpty()) k.vol = Integer.parseInt(c[1]); } catch (Exception ignored) { }
+                          try { if (c.length > 2 && !c[2].isEmpty()) k.cost = Double.parseDouble(c[2]); } catch (Exception ignored) { }
+                          try { if (c.length > 3 && !c[3].isEmpty()) k.diff = Integer.parseInt(c[3]); } catch (Exception ignored) { }
+                          if (c.length > 5) for (char ch : c[5].toCharArray()) k.src.add(String.valueOf(ch));
+                          kws.put(key, k);
+                      }
+                  }
+                  showTab(0);
+                  renderKeywords();
+              }
+
+              // ================================================================ 2. AUDIT
+              void pageAudit(LinearLayout p) {
+                  LinearLayout c = card(p, "SEO-аудит страницы", "Ответ сервера, редиректы, мета-теги, заголовки, картинки, ссылки, микроразметка, hreflang, скорость. Можно «Поделиться» ссылкой из браузера прямо в SEO Pocket.");
+                  auditUrl = input(c, "https://site.ua/page", false, "auditUrl");
+                  auditKey = input(c, "Ключевая фраза для проверки (необязательно)", false, "auditKey");
+                  LinearLayout br = buttonRow(c);
+                  button(br, "▶ Проверить", new View.OnClickListener() { @Override public void onClick(View v) { runAudit(); } });
+                  button(br, "Копировать отчёт", new View.OnClickListener() { @Override public void onClick(View v) { copy(auditOut.getText().toString()); } });
+                  button(br, "PageSpeed", new View.OnClickListener() { @Override public void onClick(View v) { open("https://pagespeed.web.dev/report?url=" + Net.enc(Net.normalizeUrl(auditUrl.getText().toString()))); } });
+                  button(br, "Rich Results", new View.OnClickListener() { @Override public void onClick(View v) { open("https://search.google.com/test/rich-results?url=" + Net.enc(Net.normalizeUrl(auditUrl.getText().toString()))); } });
+                  button(br, "Открыть", new View.OnClickListener() { @Override public void onClick(View v) { open(Net.normalizeUrl(auditUrl.getText().toString())); } });
+                  auditOut = output(c);
+                  auditOut.setText("Введите адрес и нажмите «Проверить»");
+              }
+
+              void runAudit() {
+                  final String url = Net.normalizeUrl(auditUrl.getText().toString());
+                  final String key = auditKey.getText().toString().trim();
+                  if (url.isEmpty()) { toast("Введите адрес"); return; }
+                  auditOut.setText("Проверяю " + url + " …");
+                  bg(new Runnable() { @Override public void run() {
+                      final String report = audit(url, key);
+                      ui(new Runnable() { @Override public void run() { auditOut.setText(report); } });
+                  } });
+              }
+
+              static String ok(boolean good) { return good ? "✓ " : "✗ "; }
+              static String lenMark(int len, int min, int max) { return len == 0 ? "✗ " : (len < min || len > max) ? "⚠ " : "✓ "; }
+
+              String audit(String url, String key) {
+                  StringBuilder r = new StringBuilder();
+                  List<Net.Resp> chain = Net.chain(url, 10, true);
+                  Net.Resp fin = chain.get(chain.size() - 1);
+                  r.append("■ ОТВЕТ СЕРВЕРА\n");
+                  if (fin.error != null) { r.append("✗ Ошибка: ").append(fin.error).append('\n'); return r.toString(); }
+                  if (chain.size() > 1) {
+                      r.append(chain.size() - 1 > 1 ? "⚠ " : "• ").append("Редиректов: ").append(chain.size() - 1).append('\n');
+                      for (Net.Resp h : chain) r.append("   ").append(h.code).append("  ").append(h.url).append('\n');
+                  }
+                  r.append(ok(fin.code == 200)).append("Код ").append(fin.code).append(" · ").append(fin.ms).append(" мс · HTML ")
+                          .append(kb(fin.bytesDecoded)).append('\n');
+                  boolean gz = "gzip".equalsIgnoreCase(fin.contentEncoding) || fin.header("content-encoding") != null;
+                  r.append(gz ? "✓ " : "⚠ ").append("Сжатие: ").append(fin.header("content-encoding") != null ? fin.header("content-encoding") : "нет")
+                          .append(" (по сети ").append(kb(fin.bytesOnWire)).append(")\n");
+                  r.append(fin.ms < 800 ? "✓ " : fin.ms < 2000 ? "⚠ " : "✗ ").append("Время ответа: ").append(fin.ms).append(" мс\n");
+                  r.append(ok(fin.url.startsWith("https://"))).append("HTTPS\n");
+                  String xr = fin.header("x-robots-tag");
+                  if (xr != null) r.append(xr.toLowerCase(Locale.ROOT).contains("noindex") ? "✗ " : "• ").append("X-Robots-Tag: ").append(xr).append('\n');
+
+                  SeoCore.Page p = SeoCore.analyze(fin.body, fin.url);
+                  r.append("\n■ МЕТА\n");
+                  int tl = p.title == null ? 0 : p.title.length();
+                  r.append(lenMark(tl, 30, 65)).append("Title (").append(tl).append("): ").append(p.title == null ? "—" : p.title).append('\n');
+                  int dl = p.description == null ? 0 : p.description.length();
+                  r.append(lenMark(dl, 70, 160)).append("Description (").append(dl).append("): ").append(p.description == null ? "—" : p.description).append('\n');
+                  r.append(p.h1.size() == 1 ? "✓ " : p.h1.isEmpty() ? "✗ " : "⚠ ").append("H1 (").append(p.h1.size()).append("): ")
+                          .append(p.h1.isEmpty() ? "—" : join(p.h1.subList(0, Math.min(3, p.h1.size())), " | ")).append('\n');
+                  if (p.canonical == null) r.append("⚠ Canonical: нет\n");
+                  else {
+                      String canon = Net.resolve(fin.url, p.canonical);
+                      boolean self = canon.replaceAll("/$", "").equalsIgnoreCase(fin.url.replaceAll("/$", ""));
+                      r.append(self ? "✓ " : "⚠ ").append("Canonical: ").append(canon).append(self ? " (на себя)" : " (на другую страницу)").append('\n');
+                  }
+                  boolean noindex = p.robotsMeta != null && p.robotsMeta.toLowerCase(Locale.ROOT).contains("noindex");
+                  r.append(noindex ? "✗ " : "✓ ").append("Meta robots: ").append(p.robotsMeta == null ? "нет (индексируется)" : p.robotsMeta).append('\n');
+                  r.append(p.lang != null ? "✓ " : "⚠ ").append("lang: ").append(p.lang == null ? "не указан" : p.lang).append('\n');
+                  r.append(p.viewport != null ? "✓ " : "✗ ").append("Viewport (мобильная версия): ").append(p.viewport == null ? "нет" : p.viewport).append('\n');
+                  if (p.favicon == null) r.append("⚠ Favicon не найден в <head>\n");
+
+                  r.append("\n■ КОНТЕНТ\n");
+                  r.append(p.words >= 300 ? "✓ " : "⚠ ").append("Слов на странице: ").append(p.words).append('\n');
+                  r.append("• H2: ").append(p.h2.size()).append(", H3: ").append(p.h3.size()).append('\n');
+                  for (int i = 0; i < Math.min(8, p.h2.size()); i++) r.append("   h2: ").append(p.h2.get(i)).append('\n');
+                  r.append(p.imagesNoAlt == 0 ? "✓ " : "⚠ ").append("Картинок: ").append(p.images).append(", без alt: ").append(p.imagesNoAlt).append('\n');
+                  for (String s : p.imagesNoAltSrc) r.append("   без alt: ").append(s).append('\n');
+                  r.append("• Ссылки: внутренних ").append(p.linksInternal).append(", внешних ").append(p.linksExternal).append(", nofollow ").append(p.linksNofollow).append('\n');
+                  r.append("• Скриптов: ").append(p.scripts).append(", CSS: ").append(p.styles).append(", iframe: ").append(p.iframes).append('\n');
+
+                  r.append("\n■ МИКРОРАЗМЕТКА И СОЦСЕТИ\n");
+                  r.append(p.schemaTypes.isEmpty() ? "⚠ Schema.org (JSON-LD): нет\n" : "✓ Schema.org: " + join(p.schemaTypes, ", ") + "\n");
+                  r.append(p.ogTitle != null ? "✓ " : "⚠ ").append("Open Graph: ").append(p.ogTitle == null ? "нет og:title" : p.ogTitle)
+                          .append(p.ogImage == null ? " · нет og:image" : " · есть og:image").append('\n');
+                  if (p.twitterCard != null) r.append("• Twitter card: ").append(p.twitterCard).append('\n');
+                  if (!p.hreflang.isEmpty()) {
+                      r.append("✓ hreflang: ").append(p.hreflang.size()).append('\n');
+                      for (String h : p.hreflang) r.append("   ").append(h).append('\n');
+                  } else r.append("• hreflang: нет (для сайта на UA+RU стоит добавить)\n");
+
+                  r.append("\n■ HTTP-ЗАГОЛОВКИ\n");
+                  String[] hk = {"server", "content-type", "cache-control", "expires", "last-modified", "strict-transport-security", "content-security-policy", "x-frame-options", "vary"};
+                  for (String h : hk) { String v = fin.header(h); if (v != null) r.append("• ").append(h).append(": ").append(v.length() > 90 ? v.substring(0, 90) + "…" : v).append('\n'); }
+                  if (fin.header("strict-transport-security") == null && fin.url.startsWith("https")) r.append("⚠ Нет HSTS\n");
+
+                  if (!key.isEmpty()) {
+                      r.append("\n■ КЛЮЧ «").append(key).append("»\n");
+                      r.append(ok(SeoCore.occurrences(p.title, key) > 0)).append("в Title: ").append(SeoCore.occurrences(p.title, key)).append('\n');
+                      r.append(ok(SeoCore.occurrences(p.description, key) > 0)).append("в Description: ").append(SeoCore.occurrences(p.description, key)).append('\n');
+                      r.append(ok(SeoCore.occurrences(join(p.h1, " "), key) > 0)).append("в H1: ").append(SeoCore.occurrences(join(p.h1, " "), key)).append('\n');
+                      String slugKey = SeoCore.slug(SeoCore.translitUk(key));
+                      r.append(fin.url.toLowerCase(Locale.ROOT).contains(slugKey) ? "✓ " : "• ").append("в URL (").append(slugKey).append(")\n");
+                      int occ = SeoCore.occurrences(p.text, key);
+                      double dens = p.words == 0 ? 0 : 100.0 * occ * key.split("\\s+").length / p.words;
+                      r.append(dens > 0 && dens <= 3.5 ? "✓ " : dens > 3.5 ? "⚠ " : "✗ ").append("в тексте: ").append(occ)
+                              .append(" раз · плотность ").append(String.format(Locale.ROOT, "%.2f%%", dens)).append('\n');
+                  }
+                  r.append("\n✓ хорошо · ⚠ стоит улучшить · ✗ проблема");
+                  return r.toString();
+              }
+
+              // ================================================================ 3. BULK STATUS
+              void pageBulk(LinearLayout p) {
+                  LinearLayout c = card(p, "Массовая проверка URL", "Коды ответа и редиректы для списка адресов — удобно после переезда сайта или для проверки ссылок из sitemap.");
+                  final EditText list = input(c, "Адреса, по одному в строке", true, "bulkList");
+                  final TextView out = output(c);
+                  LinearLayout br = buttonRow(c);
+                  button(br, "▶ Проверить", new View.OnClickListener() { @Override public void onClick(View v) { runBulk(list.getText().toString(), out); } });
+                  button(br, "Копировать", new View.OnClickListener() { @Override public void onClick(View v) { copy(out.getText().toString()); } });
+                  button(br, "CSV → файл", new View.OnClickListener() { @Override public void onClick(View v) { saveFile("status.csv", "text/csv", out.getText().toString().replace("\t", ";")); } });
+              }
+
+              void runBulk(String text, final TextView out) {
+                  final List<String> urls = new ArrayList<>();
+                  for (String l : text.split("\\n")) if (!l.trim().isEmpty()) urls.add(Net.normalizeUrl(l));
+                  if (urls.isEmpty()) { toast("Список пуст"); return; }
+                  final String[] lines = new String[urls.size()];
+                  final AtomicInteger left = new AtomicInteger(urls.size());
+                  out.setText("Проверяю " + urls.size() + " адресов…");
+                  for (int i = 0; i < urls.size(); i++) {
+                      final int idx = i;
+                      bg(new Runnable() { @Override public void run() {
+                          List<Net.Resp> ch = Net.chain(urls.get(idx), 10, false);
+                          Net.Resp f = ch.get(ch.size() - 1);
+                          StringBuilder codes = new StringBuilder();
+                          for (Net.Resp h : ch) { if (codes.length() > 0) codes.append("→"); codes.append(h.code < 0 ? "ERR" : String.valueOf(h.code)); }
+                          lines[idx] = codes + "\t" + f.ms + "ms\t" + urls.get(idx) + (ch.size() > 1 ? "\t→ " + f.url : "") + (f.error != null ? "\t" + f.error : "");
+                          final int l = left.decrementAndGet();
+                          ui(new Runnable() { @Override public void run() {
+                              StringBuilder sb = new StringBuilder(l > 0 ? "Осталось " + l + "\n" : "Готово\n");
+                              sb.append("Коды\tВремя\tURL\tИтог\n");
+                              for (String s : lines) if (s != null) sb.append(s).append('\n');
+                              out.setText(sb.toString());
+                          } });
+                      } });
+                  }
+              }
+
+              // ================================================================ 4. ROBOTS / SITEMAP
+              void pageRobots(LinearLayout p) {
+                  LinearLayout c = card(p, "robots.txt и sitemap.xml", "Загрузка robots.txt, проверка «можно ли роботу» на любой путь, разбор карт сайта и выборочная проверка URL из них.");
+                  final EditText dom = input(c, "site.ua", false, "robotsDomain");
+                  final EditText path = input(c, "Путь для проверки, например /catalog/?sort=price", false, "robotsPath");
+                  final TextView out = output(c);
+                  LinearLayout br = buttonRow(c);
+                  button(br, "robots.txt", new View.OnClickListener() { @Override public void onClick(View v) { runRobots(dom.getText().toString(), path.getText().toString(), out); } });
+                  button(br, "Анализ sitemap", new View.OnClickListener() { @Override public void onClick(View v) { runSitemap(dom.getText().toString(), out, false); } });
+                  button(br, "Sitemap + проверка 20 URL", new View.OnClickListener() { @Override public void onClick(View v) { runSitemap(dom.getText().toString(), out, true); } });
+                  button(br, "Копировать", new View.OnClickListener() { @Override public void onClick(View v) { copy(out.getText().toString()); } });
+              }
+
+              static String origin(String domainOrUrl) {
+                  String u = Net.normalizeUrl(domainOrUrl);
+                  java.util.regex.Matcher m = java.util.regex.Pattern.compile("^([a-z]+://[^/?#]+)", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(u);
+                  return m.find() ? m.group(1) : u;
+              }
+
+              void runRobots(final String domain, final String path, final TextView out) {
+                  if (domain.trim().isEmpty()) { toast("Введите домен"); return; }
+                  out.setText("Загружаю robots.txt…");
+                  bg(new Runnable() { @Override public void run() {
+                      String o = origin(domain);
+                      List<Net.Resp> ch = Net.chain(o + "/robots.txt", 5, true);
+                      Net.Resp r = ch.get(ch.size() - 1);
+                      StringBuilder sb = new StringBuilder();
+                      sb.append(o).append("/robots.txt → ").append(r.code).append(r.error != null ? " " + r.error : "").append('\n');
+                      if (r.code == 200 && r.body != null) {
+                          List<String> maps = new ArrayList<>();
+                          List<SeoCore.RobotsGroup> g = SeoCore.parseRobots(r.body, maps);
+                          sb.append("Групп правил: ").append(g.size()).append(" · Sitemap: ").append(maps.isEmpty() ? "не указан ⚠" : join(maps, ", ")).append("\n");
+                          if (java.util.regex.Pattern.compile("(?im)^\\s*disallow:\\s*/\\s*$").matcher(r.body).find())
+                              sb.append("✗ Похоже, сайт закрыт целиком (Disallow: /)\n");
+                          String pth = path.trim().isEmpty() ? "/" : (path.trim().startsWith("/") ? path.trim() : "/" + path.trim());
+                          sb.append("\nПуть ").append(pth).append(":\n");
+                          String[][] bots = {{"Googlebot", "Googlebot"}, {"Googlebot-Image", "Googlebot-Image"}, {"Bingbot", "bingbot"}, {"Любой бот (*)", "anybot"}};
+                          for (String[] b : bots) sb.append("  ").append(b[0]).append(": ").append(SeoCore.robotsVerdict(g, b[1], pth)).append('\n');
+                          sb.append("\n──── robots.txt ────\n").append(r.body.length() > 6000 ? r.body.substring(0, 6000) + "\n…" : r.body);
+                      } else sb.append(r.code == 404 ? "⚠ robots.txt нет — роботам разрешено всё\n" : "");
+                      final String s = sb.toString();
+                      ui(new Runnable() { @Override public void run() { out.setText(s); } });
+                  } });
+              }
+
+              void runSitemap(final String domain, final TextView out, final boolean checkUrls) {
+                  if (domain.trim().isEmpty()) { toast("Введите домен"); return; }
+                  out.setText("Ищу карты сайта…");
+                  bg(new Runnable() { @Override public void run() {
+                      String o = origin(domain);
+                      StringBuilder sb = new StringBuilder();
+                      List<String> maps = new ArrayList<>();
+                      Net.Resp rb = Net.chain(o + "/robots.txt", 5, true).get(0);
+                      if (rb.code == 200 && rb.body != null) SeoCore.parseRobots(rb.body, maps);
+                      if (maps.isEmpty()) maps.add(o + "/sitemap.xml");
+                      List<String> urls = new ArrayList<>();
+                      String newest = null, oldest = null;
+                      int files = 0;
+                      List<String> queue = new ArrayList<>(maps);
+                      while (!queue.isEmpty() && files < 25) {
+                          String sm = queue.remove(0);
+                          List<Net.Resp> ch = Net.chain(sm, 5, true);
+                          Net.Resp r = ch.get(ch.size() - 1);
+                          files++;
+                          sb.append(r.code).append("  ").append(sm);
+                          if (r.body == null || r.code != 200) { sb.append("  ✗\n"); continue; }
+                          if (sm.endsWith(".gz")) { sb.append("  (gz — не поддерживается)\n"); continue; }
+                          SeoCore.SitemapInfo si = SeoCore.parseSitemap(r.body);
+                          if (!si.childSitemaps.isEmpty()) { sb.append("  индекс: ").append(si.childSitemaps.size()).append(" карт\n"); queue.addAll(si.childSitemaps); }
+                          else sb.append("  URL: ").append(si.urls.size()).append('\n');
+                          urls.addAll(si.urls);
+                          if (si.newestLastmod != null && (newest == null || si.newestLastmod.compareTo(newest) > 0)) newest = si.newestLastmod;
+                          if (si.oldestLastmod != null && (oldest == null || si.oldestLastmod.compareTo(oldest) < 0)) oldest = si.oldestLastmod;
+                      }
+                      sb.append("\nВсего URL: ").append(urls.size()).append(" · файлов: ").append(files).append('\n');
+                      if (newest != null) sb.append("lastmod: от ").append(oldest).append(" до ").append(newest).append('\n');
+                      LinkedHashSet<String> uniq = new LinkedHashSet<>(urls);
+                      if (uniq.size() != urls.size()) sb.append("⚠ Дублей: ").append(urls.size() - uniq.size()).append('\n');
+                      int http = 0; for (String u : urls) if (u.startsWith("http://")) http++;
+                      if (http > 0) sb.append("⚠ URL на http://: ").append(http).append('\n');
+                      if (checkUrls && !urls.isEmpty()) {
+                          sb.append("\nВыборочная проверка:\n");
+                          List<String> sample = new ArrayList<>(uniq);
+                          Collections.shuffle(sample);
+                          for (String u : sample.subList(0, Math.min(20, sample.size()))) {
+                              List<Net.Resp> ch = Net.chain(u, 5, false);
+                              Net.Resp f = ch.get(ch.size() - 1);
+                              sb.append(ch.size() == 1 && f.code == 200 ? "✓ " : "✗ ").append(ch.get(0).code).append(ch.size() > 1 ? "→" + f.code : "").append("  ").append(u).append('\n');
+                          }
+                      }
+                      sb.append("\nПервые URL:\n");
+                      int n = 0; for (String u : uniq) { if (n++ >= 40) break; sb.append(u).append('\n'); }
+                      final String s = sb.toString();
+                      ui(new Runnable() { @Override public void run() { out.setText(s); } });
+                  } });
+              }
+
+              // ================================================================ 5. DOMAIN
+              void pageDomain(LinearLayout p) {
+                  LinearLayout c = card(p, "Домен", "DNS, SSL-сертификат и срок, редиректы http→https и www, данные регистрации (RDAP) и быстрые ссылки на внешние сервисы.");
+                  final EditText dom = input(c, "site.ua", false, "domainName");
+                  final TextView out = output(c);
+                  LinearLayout br = buttonRow(c);
+                  button(br, "▶ Проверить", new View.OnClickListener() { @Override public void onClick(View v) { runDomain(dom.getText().toString(), out); } });
+                  button(br, "site: в Google", new View.OnClickListener() { @Override public void onClick(View v) { open("https://www.google.com.ua/search?q=" + Net.enc("site:" + SeoCore.host(Net.normalizeUrl(dom.getText().toString())))); } });
+                  button(br, "Serpstat", new View.OnClickListener() { @Override public void onClick(View v) { open("https://serpstat.com/domains/?query=" + Net.enc(SeoCore.host(Net.normalizeUrl(dom.getText().toString()))) + "&se=g_ua"); } });
+                  button(br, "Ahrefs DR", new View.OnClickListener() { @Override public void onClick(View v) { open("https://ahrefs.com/website-authority-checker?input=" + Net.enc(SeoCore.host(Net.normalizeUrl(dom.getText().toString())))); } });
+                  button(br, "Web Archive", new View.OnClickListener() { @Override public void onClick(View v) { open("https://web.archive.org/web/*/" + SeoCore.host(Net.normalizeUrl(dom.getText().toString()))); } });
+                  button(br, "Копировать", new View.OnClickListener() { @Override public void onClick(View v) { copy(out.getText().toString()); } });
+              }
+
+              void runDomain(final String input, final TextView out) {
+                  final String host = SeoCore.host(Net.normalizeUrl(input));
+                  if (host.isEmpty()) { toast("Введите домен"); return; }
+                  out.setText("Проверяю " + host + "…");
+                  bg(new Runnable() { @Override public void run() {
+                      StringBuilder sb = new StringBuilder("■ ").append(host).append("\n\n■ DNS\n");
+                      try { for (InetAddress a : InetAddress.getAllByName(host)) sb.append("• ").append(a.getHostAddress()).append('\n'); }
+                      catch (Exception e) { sb.append("✗ ").append(e.getMessage()).append('\n'); }
+                      sb.append("\n■ SSL\n");
+                      HttpsURLConnection c = null;
+                      try {
+                          c = (HttpsURLConnection) new java.net.URL("https://" + host + "/").openConnection();
+                          c.setConnectTimeout(Net.timeoutMs);
+                          c.setReadTimeout(Net.timeoutMs);
+                          c.connect();
+                          Certificate[] certs = c.getServerCertificates();
+                          if (certs.length > 0 && certs[0] instanceof X509Certificate) {
+                              X509Certificate x = (X509Certificate) certs[0];
+                              long days = (x.getNotAfter().getTime() - System.currentTimeMillis()) / 86400000L;
+                              sb.append(days > 20 ? "✓ " : days > 0 ? "⚠ " : "✗ ").append("Действует до ")
+                                      .append(new SimpleDateFormat("dd.MM.yyyy", Locale.ROOT).format(x.getNotAfter())).append(" (").append(days).append(" дн.)\n");
+                              sb.append("• Выдан: ").append(cn(x.getIssuerX500Principal().getName())).append('\n');
+                              sb.append("• Для: ").append(cn(x.getSubjectX500Principal().getName())).append('\n');
+                          }
+                      } catch (Exception e) { sb.append("✗ ").append(e.getMessage()).append('\n'); }
+                      finally { if (c != null) c.disconnect(); }
+                      sb.append("\n■ РЕДИРЕКТЫ (должны вести в одну версию)\n");
+                      String[] variants = {"http://" + host + "/", "http://www." + host + "/", "https://" + host + "/", "https://www." + host + "/"};
+                      LinkedHashSet<String> finals = new LinkedHashSet<>();
+                      for (String v : variants) {
+                          List<Net.Resp> ch = Net.chain(v, 6, false);
+                          Net.Resp f = ch.get(ch.size() - 1);
+                          StringBuilder codes = new StringBuilder();
+                          for (Net.Resp h : ch) { if (codes.length() > 0) codes.append("→"); codes.append(h.code < 0 ? "ERR" : String.valueOf(h.code)); }
+                          sb.append("• ").append(v).append("  ").append(codes).append(ch.size() > 1 ? "  → " + f.url : "").append('\n');
+                          if (f.code == 200) finals.add(f.url);
+                      }
+                      sb.append(finals.size() == 1 ? "✓ Все варианты ведут на " + finals.iterator().next() + "\n" : "⚠ Разные итоговые адреса: " + finals + " — настройте 301\n");
+                      sb.append("\n■ РЕГИСТРАЦИЯ (RDAP)\n");
+                      Net.Resp rd;
+                      List<Net.Resp> rch = Net.chain("https://rdap.org/domain/" + host, 5, true);
+                      rd = rch.get(rch.size() - 1);
+                      try {
+                          if (rd.code != 200 || rd.body == null) throw new Exception("нет данных RDAP (для .ua часто недоступно) — код " + rd.code);
+                          JSONObject js = new JSONObject(rd.body);
+                          JSONArray ev = js.optJSONArray("events");
+                          if (ev != null) for (int i = 0; i < ev.length(); i++) {
+                              JSONObject e = ev.getJSONObject(i);
+                              String a = e.optString("eventAction"), d = e.optString("eventDate");
+                              String name = a.equals("registration") ? "Зарегистрирован" : a.equals("expiration") ? "Истекает" : a.equals("last changed") ? "Изменён" : a;
+                              sb.append("• ").append(name).append(": ").append(d.length() >= 10 ? d.substring(0, 10) : d).append('\n');
+                          }
+                          JSONArray ents = js.optJSONArray("entities");
+                          if (ents != null) for (int i = 0; i < ents.length(); i++) {
+                              JSONObject en = ents.getJSONObject(i);
+                              JSONArray roles = en.optJSONArray("roles");
+                              if (roles != null && roles.toString().contains("registrar")) {
+                                  JSONArray v = en.optJSONArray("vcardArray");
+                                  String fn = v != null ? v.toString().replaceAll(".*\"fn\",\\{\\},\"text\",\"([^\"]+)\".*", "$1") : en.optString("handle");
+                                  sb.append("• Регистратор: ").append(fn.length() > 80 ? en.optString("handle") : fn).append('\n');
+                              }
+                          }
+                          JSONArray ns = js.optJSONArray("nameservers");
+                          if (ns != null) for (int i = 0; i < ns.length(); i++) sb.append("• NS: ").append(ns.getJSONObject(i).optString("ldhName")).append('\n');
+                      } catch (Exception e) { sb.append("• ").append(e.getMessage()).append('\n'); }
+                      final String s = sb.toString();
+                      ui(new Runnable() { @Override public void run() { out.setText(s); } });
+                  } });
+              }
+
+              static String cn(String dn) {
+                  java.util.regex.Matcher m = java.util.regex.Pattern.compile("CN=([^,]+)").matcher(dn);
+                  String o = m.find() ? m.group(1) : dn;
+                  java.util.regex.Matcher m2 = java.util.regex.Pattern.compile("O=([^,]+)").matcher(dn);
+                  return m2.find() ? o + " (" + m2.group(1) + ")" : o;
+              }
+
+              // ================================================================ 6. SNIPPET
+              void pageSnippet(LinearLayout p) {
+                  LinearLayout c = card(p, "Сниппет Google", "Длина в символах и пикселях (как считает Google) и живой предпросмотр.");
+                  final EditText url = input(c, "https://site.ua/catalog/noutbuky/", false, "snUrl");
+                  final EditText title = input(c, "Title", false, "snTitle");
+                  final TextView tInfo = text("", 12, C_SUB, false); c.addView(tInfo);
+                  final EditText desc = input(c, "Description", true, "snDesc");
+                  final TextView dInfo = text("", 12, C_SUB, false); c.addView(dInfo);
+                  LinearLayout prev = card(p, "Предпросмотр", null);
+                  final TextView pUrl = text("", 13, 0xFF202124, false);
+                  final TextView pTitle = text("", 19, 0xFF1A0DAB, false);
+                  final TextView pDesc = text("", 14, 0xFF4D5156, false);
+                  prev.addView(pUrl); prev.addView(pTitle); prev.addView(pDesc);
+                  final Paint tp = new Paint(); tp.setTypeface(Typeface.SANS_SERIF); tp.setTextSize(20);
+                  final Paint dpnt = new Paint(); dpnt.setTypeface(Typeface.SANS_SERIF); dpnt.setTextSize(14);
+                  final Runnable update = new Runnable() { @Override public void run() {
+                      String t = title.getText().toString(), d = desc.getText().toString();
+                      float tw = tp.measureText(t), dw = dpnt.measureText(d);
+                      tInfo.setText(t.length() + " симв · " + Math.round(tw) + " px из ~580" + (tw > 580 ? "  ⚠ обрежется" : t.length() < 30 ? "  ⚠ коротко" : "  ✓"));
+                      tInfo.setTextColor(tw > 580 ? C_WARN : C_OK);
+                      dInfo.setText(d.length() + " симв · " + Math.round(dw) + " px из ~920" + (dw > 920 ? "  ⚠ обрежется" : d.length() < 70 ? "  ⚠ коротко" : "  ✓"));
+                      dInfo.setTextColor(dw > 920 ? C_WARN : C_OK);
+                      String u = Net.normalizeUrl(url.getText().toString());
+                      pUrl.setText(u.isEmpty() ? "site.ua › …" : u.replaceFirst("^https?://", "").replace("/", " › ").replaceAll(" › $", ""));
+                      pTitle.setText(t.isEmpty() ? "Заголовок страницы" : cut(tp, t, 580));
+                      pDesc.setText(d.isEmpty() ? "Описание страницы…" : cut(dpnt, d, 920));
+                  } };
+                  SimpleWatcher w = new SimpleWatcher() { @Override public void afterTextChanged(Editable s) { update.run(); } };
+                  url.addTextChangedListener(w); title.addTextChangedListener(w); desc.addTextChangedListener(w);
+                  LinearLayout br = buttonRow(c);
+                  button(br, "Взять со страницы", new View.OnClickListener() { @Override public void onClick(View v) {
+                      final String u = Net.normalizeUrl(url.getText().toString());
+                      if (u.isEmpty()) { toast("Введите URL"); return; }
+                      bg(new Runnable() { @Override public void run() {
+                          List<Net.Resp> ch = Net.chain(u, 6, true);
+                          final SeoCore.Page pg = SeoCore.analyze(ch.get(ch.size() - 1).body, u);
+                          ui(new Runnable() { @Override public void run() {
+                              title.setText(pg.title == null ? "" : pg.title);
+                              desc.setText(pg.description == null ? "" : pg.description);
+                          } });
+                      } });
+                  } });
+                  button(br, "Копировать", new View.OnClickListener() { @Override public void onClick(View v) {
+                      copy("<title>" + title.getText() + "</title>\n<meta name=\"description\" content=\"" + desc.getText().toString().replace("\"", "&quot;") + "\">");
+                  } });
+                  update.run();
+              }
+
+              static String cut(Paint p, String s, float maxPx) {
+                  if (p.measureText(s) <= maxPx) return s;
+                  String t = s;
+                  while (t.length() > 1 && p.measureText(t + " …") > maxPx) t = t.substring(0, t.length() - 1);
+                  return t.trim() + " …";
+              }
+
+              // ================================================================ 7. TOOLS
+              void pageTools(LinearLayout p) {
+                  LinearLayout tr = card(p, "Транслит и ЧПУ", "Официальная украинская транслитерация (КМУ №55) и русская — для адресов страниц.");
+                  final EditText tin = input(tr, "Купити ноутбук у Києві", false, "trIn");
+                  final TextView tout = output(tr);
+                  SimpleWatcher tw = new SimpleWatcher() { @Override public void afterTextChanged(Editable s) {
+                      String v = s.toString();
+                      String uk = SeoCore.translitUk(v), ru = SeoCore.translitRu(v);
+                      tout.setText("UA:   " + uk + "\nslug: " + SeoCore.slug(uk) + "\n\nRU:   " + ru + "\nslug: " + SeoCore.slug(ru));
+                  } };
+                  tin.addTextChangedListener(tw);
+                  tw.afterTextChanged(tin.getText());
+                  LinearLayout tb = buttonRow(tr);
+                  button(tb, "Копировать UA slug", new View.OnClickListener() { @Override public void onClick(View v) { copy(SeoCore.slug(SeoCore.translitUk(tin.getText().toString()))); } });
+                  button(tb, "Копировать RU slug", new View.OnClickListener() { @Override public void onClick(View v) { copy(SeoCore.slug(SeoCore.translitRu(tin.getText().toString()))); } });
+
+                  LinearLayout u = card(p, "UTM-метки", null);
+                  final EditText uUrl = input(u, "https://site.ua/landing", false, "utmUrl");
+                  final EditText uSrc = input(u, "utm_source (telegram, instagram, google)", false, "utmSrc");
+                  final EditText uMed = input(u, "utm_medium (cpc, post, stories, email)", false, "utmMed");
+                  final EditText uCmp = input(u, "utm_campaign", false, "utmCmp");
+                  final EditText uTerm = input(u, "utm_term", false, "utmTerm");
+                  final EditText uCnt = input(u, "utm_content", false, "utmCnt");
+                  final TextView uOut = output(u);
+                  SimpleWatcher uw = new SimpleWatcher() { @Override public void afterTextChanged(Editable s) {
+                      uOut.setText(SeoCore.utm(Net.normalizeUrl(uUrl.getText().toString()), uSrc.getText().toString(), uMed.getText().toString(),
+                              uCmp.getText().toString(), uTerm.getText().toString(), uCnt.getText().toString()));
+                  } };
+                  for (EditText e : new EditText[]{uUrl, uSrc, uMed, uCmp, uTerm, uCnt}) e.addTextChangedListener(uw);
+                  uw.afterTextChanged(null);
+                  button(buttonRow(u), "Копировать ссылку", new View.OnClickListener() { @Override public void onClick(View v) { copy(uOut.getText().toString()); } });
+
+                  LinearLayout l = card(p, "Обработка списка ключей", "Вставьте список — уберите дубли, минус-слова, отсортируйте.");
+                  final EditText lin = input(l, "Ключи, по одному в строке", true, "listIn");
+                  final EditText lminus = input(l, "Минус-слова", false, "listMinus");
+                  final TextView lInfo = text("", 12, C_SUB, false); l.addView(lInfo);
+                  LinearLayout lb = buttonRow(l);
+                  button(lb, "Убрать дубли", new View.OnClickListener() { @Override public void onClick(View v) {
+                      LinkedHashSet<String> s = new LinkedHashSet<>();
+                      for (String x : lin.getText().toString().split("\\n")) if (!x.trim().isEmpty()) s.add(SeoCore.normKeyword(x));
+                      int before = lin.getText().toString().split("\\n").length;
+                      lin.setText(join(s, "\n")); lInfo.setText("Было строк " + before + " → стало " + s.size());
+                  } });
+                  button(lb, "Минус-слова", new View.OnClickListener() { @Override public void onClick(View v) {
+                      List<String> m = new ArrayList<>();
+                      for (String w : lminus.getText().toString().split("[,;\\s]+")) if (!w.isEmpty()) m.add(w);
+                      List<String> keep = new ArrayList<>(); int removed = 0;
+                      for (String x : lin.getText().toString().split("\\n")) { if (x.trim().isEmpty()) continue; if (SeoCore.hasMinus(x, m)) removed++; else keep.add(x); }
+                      lin.setText(join(keep, "\n")); lInfo.setText("Удалено " + removed + ", осталось " + keep.size());
+                  } });
+                  button(lb, "А–Я", new View.OnClickListener() { @Override public void onClick(View v) {
+                      List<String> s = new ArrayList<>();
+                      for (String x : lin.getText().toString().split("\\n")) if (!x.trim().isEmpty()) s.add(x.trim());
+                      Collections.sort(s); lin.setText(join(s, "\n"));
+                  } });
+                  button(lb, "нижний регистр", new View.OnClickListener() { @Override public void onClick(View v) { lin.setText(lin.getText().toString().toLowerCase(Locale.ROOT)); } });
+                  button(lb, "Копировать", new View.OnClickListener() { @Override public void onClick(View v) { copy(lin.getText().toString()); } });
+                  button(lb, "В сборщик", new View.OnClickListener() { @Override public void onClick(View v) {
+                      List<String> s = new ArrayList<>();
+                      for (String x : lin.getText().toString().split("\\n")) if (!x.trim().isEmpty()) s.add(x.trim());
+                      showTab(0); addKeywords(s, "list", new ArrayList<String>(), null); renderKeywords();
+                  } });
+
+                  LinearLayout a = card(p, "Анализ текста", "Частые слова и словосочетания, плотность, объём — для своих текстов и текстов конкурентов.");
+                  final EditText ain = input(a, "Вставьте текст", true, "textIn");
+                  final TextView aout = output(a);
+                  LinearLayout ab = buttonRow(a);
+                  button(ab, "Анализировать", new View.OnClickListener() { @Override public void onClick(View v) { aout.setText(textReport(ain.getText().toString())); } });
+                  button(ab, "Текст со страницы", new View.OnClickListener() { @Override public void onClick(View v) {
+                      final String url = Net.normalizeUrl(prefs.getString("auditUrl", ""));
+                      if (url.isEmpty()) { toast("Укажите адрес во вкладке «Аудит»"); return; }
+                      toast("Загружаю " + url);
+                      bg(new Runnable() { @Override public void run() {
+                          List<Net.Resp> ch = Net.chain(url, 6, true);
+                          final String txt = SeoCore.analyze(ch.get(ch.size() - 1).body, url).text;
+                          ui(new Runnable() { @Override public void run() { ain.setText(txt); aout.setText(textReport(txt)); } });
+                      } });
+                  } });
+              }
+
+              static String textReport(String t) {
+                  StringBuilder sb = new StringBuilder();
+                  int words = t.trim().isEmpty() ? 0 : t.trim().split("\\s+").length;
+                  sb.append("Символов: ").append(t.length()).append(" · без пробелов: ").append(t.replaceAll("\\s", "").length())
+                          .append(" · слов: ").append(words).append("\n");
+                  for (int n = 1; n <= 3; n++) {
+                      sb.append("\n").append(n == 1 ? "Слова" : n == 2 ? "Пары слов" : "Тройки слов").append(":\n");
+                      for (Map.Entry<String, Integer> e : SeoCore.wordFreq(t, n, 15)) {
+                          double pct = words == 0 ? 0 : 100.0 * e.getValue() * n / words;
+                          sb.append(String.format(Locale.ROOT, "%4d  %5.2f%%  ", e.getValue(), pct)).append(e.getKey()).append('\n');
+                      }
+                  }
+                  return sb.toString();
+              }
+
+              // ================================================================ 8. PROJECTS
+              void pageProjects(LinearLayout p) {
+                  LinearLayout add = card(p, "Проекты и клиенты", "Домены с заметками. Нажмите на домен — откроется аудит.");
+                  final EditText dom = input(add, "домен клиента", false, null);
+                  final EditText note = input(add, "заметка (доступы, задачи, договорённости)", true, null);
+                  final LinearLayout list = new LinearLayout(this);
+                  list.setOrientation(LinearLayout.VERTICAL);
+                  button(buttonRow(add), "Добавить", new View.OnClickListener() { @Override public void onClick(View v) {
+                      if (dom.getText().toString().trim().isEmpty()) return;
+                      try {
+                          JSONArray a = new JSONArray(prefs.getString("projects", "[]"));
+                          JSONObject o = new JSONObject();
+                          o.put("domain", SeoCore.host(Net.normalizeUrl(dom.getText().toString())));
+                          o.put("note", note.getText().toString());
+                          o.put("date", new SimpleDateFormat("dd.MM.yyyy", Locale.ROOT).format(new Date()));
+                          a.put(o);
+                          prefs.edit().putString("projects", a.toString()).apply();
+                          dom.setText(""); note.setText("");
+                          renderProjects(list);
+                      } catch (Exception e) { toast(e.getMessage()); }
+                  } });
+                  p.addView(list);
+                  LinearLayout col = card(p, "Сохранённые сборы ключей", null);
+                  final LinearLayout clist = new LinearLayout(this);
+                  clist.setOrientation(LinearLayout.VERTICAL);
+                  col.addView(clist);
+                  renderProjects(list);
+                  renderCollections(clist);
+              }
+
+              void renderProjects(final LinearLayout list) {
+                  list.removeAllViews();
+                  try {
+                      final JSONArray a = new JSONArray(prefs.getString("projects", "[]"));
+                      for (int i = 0; i < a.length(); i++) {
+                          final int idx = i;
+                          final JSONObject o = a.getJSONObject(i);
+                          LinearLayout c = card(list, o.optString("domain"), o.optString("date") + (o.optString("note").isEmpty() ? "" : "\n" + o.optString("note")));
+                          LinearLayout br = buttonRow(c);
+                          button(br, "Аудит", new View.OnClickListener() { @Override public void onClick(View v) {
+                              showTab(1); auditUrl.setText("https://" + o.optString("domain")); runAudit();
+                          } });
+                          button(br, "Домен", new View.OnClickListener() { @Override public void onClick(View v) {
+                              prefs.edit().putString("domainName", o.optString("domain")).apply(); pages[4] = null; showTab(4);
+                          } });
+                          button(br, "Ключи", new View.OnClickListener() { @Override public void onClick(View v) {
+                              showTab(0); kwSeeds.setText(o.optString("domain").replaceAll("\\..*$", ""));
+                          } });
+                          button(br, "Удалить", new View.OnClickListener() { @Override public void onClick(View v) {
+                              JSONArray n = new JSONArray();
+                              try { for (int k = 0; k < a.length(); k++) if (k != idx) n.put(a.get(k)); } catch (Exception ignored) { }
+                              prefs.edit().putString("projects", n.toString()).apply();
+                              renderProjects(list);
+                          } });
+                      }
+                      if (a.length() == 0) list.addView(text("  Пока нет проектов", 13, C_SUB, false));
+                  } catch (Exception e) { toast(e.getMessage()); }
+              }
+
+              void renderCollections(final LinearLayout list) {
+                  list.removeAllViews();
+                  try {
+                      final JSONArray a = new JSONArray(prefs.getString("collections", "[]"));
+                      for (int i = 0; i < a.length(); i++) {
+                          final int idx = i;
+                          final JSONObject o = a.getJSONObject(i);
+                          list.addView(text(o.optString("name") + " — " + o.optInt("count") + " фраз · " + o.optString("date"), 14, C_TEXT, true));
+                          LinearLayout br = buttonRow(list);
+                          button(br, "Открыть", new View.OnClickListener() { @Override public void onClick(View v) { loadCollection(o.optString("csv")); } });
+                          button(br, "CSV → файл", new View.OnClickListener() { @Override public void onClick(View v) { saveFile("keywords-" + SeoCore.slug(SeoCore.translitUk(o.optString("name"))) + ".csv", "text/csv", o.optString("csv")); } });
+                          button(br, "Поделиться", new View.OnClickListener() { @Override public void onClick(View v) { share(o.optString("csv"), o.optString("name")); } });
+                          button(br, "Удалить", new View.OnClickListener() { @Override public void onClick(View v) {
+                              JSONArray n = new JSONArray();
+                              try { for (int k = 0; k < a.length(); k++) if (k != idx) n.put(a.get(k)); } catch (Exception ignored) { }
+                              prefs.edit().putString("collections", n.toString()).apply();
+                              renderCollections(list);
+                          } });
+                      }
+                      if (a.length() == 0) list.addView(text("Сохраните сбор кнопкой «Сохранить сбор» во вкладке «Ключи UA»", 13, C_SUB, false));
+                  } catch (Exception e) { toast(e.getMessage()); }
+              }
+
+              // ================================================================ 9. SETTINGS
+              void pageSettings(LinearLayout p) {
+                  LinearLayout s = card(p, "Serpstat API (частотность UA)", "Частотность, CPC и сложность для собранных ключей. Нужен ваш токен Serpstat (Профиль → API). Каждая фраза тратит лимиты API.");
+                  input(s, "Токен Serpstat", false, "serpToken");
+                  input(s, "База (по умолчанию g_ua — Google Украина)", false, "serpSe");
+                  LinearLayout n = card(p, "Сеть", null);
+                  final TextView uaLbl = text("", 14, C_TEXT, false);
+                  n.addView(uaLbl);
+                  final String[] uaNames = {"Телефон (Chrome Android)", "Компьютер (Chrome Windows)", "Googlebot Smartphone"};
+                  uaLbl.setText("User-Agent для проверок: " + uaNames[prefs.getInt("ua", 0)]);
+                  button(buttonRow(n), "Сменить User-Agent", new View.OnClickListener() { @Override public void onClick(View v) {
+                      int next = (prefs.getInt("ua", 0) + 1) % 3;
+                      prefs.edit().putInt("ua", next).apply(); applySettings();
+                      uaLbl.setText("User-Agent для проверок: " + uaNames[next]);
+                  } });
+                  final TextView dl = text("", 14, C_TEXT, false);
+                  n.addView(dl);
+                  dl.setText("Пауза между запросами подсказок: " + prefs.getInt("delay", 150) + " мс");
+                  LinearLayout dr = buttonRow(n);
+                  for (final int ms : new int[]{50, 150, 300, 600}) button(dr, ms + " мс", new View.OnClickListener() { @Override public void onClick(View v) {
+                      prefs.edit().putInt("delay", ms).apply(); dl.setText("Пауза между запросами подсказок: " + ms + " мс");
+                  } });
+                  n.addView(text("Если подсказки перестали приходить — увеличьте паузу: Google временно ограничивает слишком частые запросы.", 12, C_SUB, false));
+                  LinearLayout k = card(p, "Клавиши Titan", "Когда курсор не в поле ввода: K — Ключи, A — Аудит, M — Массово, R — Robots, D — Домен, S — Сниппет, T — Инструменты, P — Проекты, N — Настройки. Ссылку из браузера можно «Поделиться» → SEO Pocket — сразу запустится аудит.");
+                  k.setPadding(dp(12), dp(10), dp(12), dp(12));
+              }
+          }
+          EOF_TCK
+          cat > 'SeoPocket/app/src/main/java/com/ievhenii/seopocket/Net.java' <<'EOF_TCK'
+          package com.ievhenii.seopocket;
+
+          import java.io.ByteArrayOutputStream;
+          import java.io.InputStream;
+          import java.io.OutputStream;
+          import java.net.HttpURLConnection;
+          import java.net.URL;
+          import java.net.URLEncoder;
+          import java.nio.charset.Charset;
+          import java.nio.charset.StandardCharsets;
+          import java.util.ArrayList;
+          import java.util.List;
+          import java.util.Locale;
+          import java.util.Map;
+          import java.util.regex.Matcher;
+          import java.util.regex.Pattern;
+          import java.util.zip.GZIPInputStream;
+
+          /** Small HTTP helper (no libraries): manual redirects, gzip, charset detection, timings. */
+          public final class Net {
+              private Net() { }
+
+              public static final String UA_MOBILE = "Mozilla/5.0 (Linux; Android 15; Titan 2 Elite) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36";
+              public static final String UA_DESKTOP = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+              public static final String UA_GOOGLEBOT = "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)";
+              public static volatile String userAgent = UA_MOBILE;
+              public static volatile int timeoutMs = 15000;
+
+              public static final class Resp {
+                  public int code = -1;
+                  public String url, location, contentType, contentEncoding, error, body;
+                  public Map<String, List<String>> headers;
+                  public long ms, bytesOnWire, bytesDecoded;
+                  public String header(String name) {
+                      if (headers == null) return null;
+                      for (Map.Entry<String, List<String>> e : headers.entrySet()) {
+                          if (e.getKey() != null && e.getKey().equalsIgnoreCase(name) && !e.getValue().isEmpty()) return e.getValue().get(0);
+                      }
+                      return null;
+                  }
+              }
+
+              public static String normalizeUrl(String u) {
+                  u = u.trim();
+                  if (u.isEmpty()) return u;
+                  if (!u.matches("(?i)^[a-z]+://.*")) u = "https://" + u;
+                  return u;
+              }
+
+              public static String enc(String s) {
+                  try { return URLEncoder.encode(s, "UTF-8"); } catch (Exception e) { return s; }
+              }
+
+              /** One request, no redirect following. readBody=false for HEAD-like checks (body is still drained up to maxBytes). */
+              public static Resp fetch(String url, boolean readBody, int maxBytes, String postJson) {
+                  Resp r = new Resp();
+                  r.url = url;
+                  HttpURLConnection c = null;
+                  long t0 = System.nanoTime();
+                  try {
+                      c = (HttpURLConnection) new URL(url).openConnection();
+                      c.setInstanceFollowRedirects(false);
+                      c.setConnectTimeout(timeoutMs);
+                      c.setReadTimeout(timeoutMs);
+                      c.setRequestProperty("User-Agent", userAgent);
+                      c.setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+                      c.setRequestProperty("Accept-Language", "uk-UA,uk;q=0.9,ru;q=0.8,en;q=0.7");
+                      c.setRequestProperty("Accept-Encoding", "gzip");
+                      if (postJson != null) {
+                          c.setRequestMethod("POST");
+                          c.setDoOutput(true);
+                          c.setRequestProperty("Content-Type", "application/json");
+                          byte[] b = postJson.getBytes(StandardCharsets.UTF_8);
+                          try (OutputStream os = c.getOutputStream()) { os.write(b); }
+                      }
+                      r.code = c.getResponseCode();
+                      r.headers = c.getHeaderFields();
+                      r.location = c.getHeaderField("Location");
+                      r.contentType = c.getContentType();
+                      r.contentEncoding = c.getContentEncoding();
+                      InputStream in = r.code >= 400 ? c.getErrorStream() : c.getInputStream();
+                      if (in != null) {
+                          CountingStream cs = new CountingStream(in);
+                          InputStream body = "gzip".equalsIgnoreCase(r.contentEncoding) ? new GZIPInputStream(cs) : cs;
+                          ByteArrayOutputStream bo = new ByteArrayOutputStream();
+                          byte[] buf = new byte[16384];
+                          int n;
+                          while ((n = body.read(buf)) > 0) {
+                              if (bo.size() < maxBytes) bo.write(buf, 0, Math.min(n, maxBytes - bo.size()));
+                              else if (!readBody) break;
+                          }
+                          body.close();
+                          r.bytesOnWire = cs.count;
+                          byte[] bytes = bo.toByteArray();
+                          r.bytesDecoded = bytes.length;
+                          if (readBody) r.body = new String(bytes, charsetOf(r.contentType, bytes));
+                      }
+                  } catch (Exception e) {
+                      r.error = e.getClass().getSimpleName() + (e.getMessage() != null ? ": " + e.getMessage() : "");
+                  } finally {
+                      r.ms = (System.nanoTime() - t0) / 1000000;
+                      if (c != null) c.disconnect();
+                  }
+                  return r;
+              }
+
+              /** Follows redirects by hand so every hop (code, URL) is visible. The last element is the final response. */
+              public static List<Resp> chain(String url, int maxHops, boolean readFinalBody) {
+                  List<Resp> out = new ArrayList<>();
+                  String cur = normalizeUrl(url);
+                  for (int i = 0; i <= maxHops; i++) {
+                      Resp r = fetch(cur, readFinalBody, 3 * 1024 * 1024, null);
+                      out.add(r);
+                      if (r.code >= 300 && r.code < 400 && r.location != null) {
+                          cur = resolve(cur, r.location);
+                      } else break;
+                  }
+                  return out;
+              }
+
+              public static String resolve(String base, String loc) {
+                  try { return new URL(new URL(base), loc).toString(); } catch (Exception e) { return loc; }
+              }
+
+              static Charset charsetOf(String contentType, byte[] bytes) {
+                  String cs = null;
+                  if (contentType != null) {
+                      Matcher m = Pattern.compile("charset=([\\w-]+)", Pattern.CASE_INSENSITIVE).matcher(contentType);
+                      if (m.find()) cs = m.group(1);
+                  }
+                  if (cs == null) {
+                      String head = new String(bytes, 0, Math.min(bytes.length, 4096), StandardCharsets.ISO_8859_1);
+                      Matcher m = Pattern.compile("charset\\s*=\\s*[\"']?([\\w-]+)", Pattern.CASE_INSENSITIVE).matcher(head);
+                      if (m.find()) cs = m.group(1);
+                  }
+                  try { if (cs != null) return Charset.forName(cs.toUpperCase(Locale.ROOT)); } catch (Exception ignored) { }
+                  return StandardCharsets.UTF_8;
+              }
+
+              static final class CountingStream extends java.io.FilterInputStream {
+                  long count;
+                  CountingStream(InputStream in) { super(in); }
+                  @Override public int read() throws java.io.IOException { int b = super.read(); if (b >= 0) count++; return b; }
+                  @Override public int read(byte[] b, int off, int len) throws java.io.IOException {
+                      int n = super.read(b, off, len); if (n > 0) count += n; return n;
+                  }
+              }
+
+              // ------------------------------------------------------------------ keyword suggestion sources
+              /** source: "google" | "youtube" | "bing";  lang: "uk" | "ru". Region is always Ukraine. */
+              public static List<String> suggest(String source, String query, String lang) {
+                  String url;
+                  switch (source) {
+                      case "youtube":
+                          url = "https://suggestqueries.google.com/complete/search?client=firefox&ds=yt&hl=" + lang + "&gl=ua&ie=utf-8&oe=utf-8&q=" + enc(query);
+                          break;
+                      case "bing":
+                          url = "https://api.bing.com/osjson.aspx?market=uk-UA&query=" + enc(query);
+                          break;
+                      default:
+                          url = "https://suggestqueries.google.com/complete/search?client=firefox&hl=" + lang + "&gl=ua&ie=utf-8&oe=utf-8&q=" + enc(query);
+                  }
+                  Resp r = fetch(url, true, 512 * 1024, null);
+                  if (r.code != 200 || r.body == null) return new ArrayList<>();
+                  return SeoCore.parseSuggestJson(r.body);
+              }
+          }
+          EOF_TCK
+          cat > 'SeoPocket/app/src/main/java/com/ievhenii/seopocket/SeoCore.java' <<'EOF_TCK'
+          package com.ievhenii.seopocket;
+
+          import java.util.ArrayList;
+          import java.util.Collections;
+          import java.util.Comparator;
+          import java.util.HashMap;
+          import java.util.LinkedHashMap;
+          import java.util.LinkedHashSet;
+          import java.util.List;
+          import java.util.Locale;
+          import java.util.Map;
+          import java.util.regex.Matcher;
+          import java.util.regex.Pattern;
+
+          /** Pure-Java SEO logic (no Android classes): HTML analysis, robots.txt, sitemaps, transliteration, keyword helpers. */
+          public final class SeoCore {
+              private SeoCore() { }
+
+              // ===================================================================== keyword modifiers (Ukraine)
+              public static final String[] ALPHA_UK = "а б в г ґ д е є ж з и і ї й к л м н о п р с т у ф х ц ч ш щ ь ю я".split(" ");
+              public static final String[] ALPHA_RU = "а б в г д е ж з и й к л м н о п р с т у ф х ц ч ш щ э ю я".split(" ");
+              public static final String[] ALPHA_EN = "a b c d e f g h i j k l m n o p q r s t u v w x y z".split(" ");
+              public static final String[] DIGITS = "0 1 2 3 4 5 6 7 8 9".split(" ");
+              public static final String[] QUESTIONS_UK = {"як", "що", "де", "коли", "скільки", "чому", "який", "яка", "які", "чи", "навіщо", "хто"};
+              public static final String[] QUESTIONS_RU = {"как", "что", "где", "когда", "сколько", "почему", "какой", "какая", "какие", "можно ли", "зачем", "кто"};
+              public static final String[] COMMERCE_UK = {"купити", "ціна", "вартість", "недорого", "відгуки", "замовити", "доставка", "інтернет магазин",
+                      "оптом", "б/у", "кращий", "топ", "рейтинг", "порівняння", "акція", "знижка", "в кредит", "розстрочка", "україна", "послуги"};
+              public static final String[] COMMERCE_RU = {"купить", "цена", "стоимость", "недорого", "отзывы", "заказать", "доставка", "интернет магазин",
+                      "оптом", "бу", "лучший", "топ", "рейтинг", "сравнение", "акция", "скидка", "в кредит", "рассрочка", "украина", "услуги"};
+              public static final String[] CITIES_UK = {"київ", "харків", "одеса", "дніпро", "львів", "запоріжжя", "вінниця", "полтава", "черкаси",
+                      "чернігів", "житомир", "суми", "хмельницький", "рівне", "івано-франківськ", "тернопіль", "луцьк", "ужгород", "кропивницький",
+                      "миколаїв", "херсон", "чернівці", "біла церква", "кривий ріг"};
+              public static final String[] CITIES_RU = {"киев", "харьков", "одесса", "днепр", "львов", "запорожье", "винница", "полтава", "черкассы",
+                      "чернигов", "житомир", "сумы", "хмельницкий", "ровно", "ивано-франковск", "тернополь", "луцк", "ужгород", "кропивницкий",
+                      "николаев", "херсон", "черновцы", "белая церковь", "кривой рог"};
+
+              /** Builds the list of queries to send to suggestion services for one seed. */
+              public static List<String> buildQueries(String seed, boolean uk, boolean ru, boolean alpha, boolean questions,
+                                                      boolean commerce, boolean cities, boolean prefix) {
+                  LinkedHashSet<String> q = new LinkedHashSet<>();
+                  String s = seed.trim().replaceAll("\\s+", " ");
+                  if (s.isEmpty()) return new ArrayList<>(q);
+                  q.add(s);
+                  q.add(s + " ");
+                  if (alpha) {
+                      List<String> letters = new ArrayList<>();
+                      if (uk) Collections.addAll(letters, ALPHA_UK);
+                      if (ru) Collections.addAll(letters, ALPHA_RU);
+                      Collections.addAll(letters, ALPHA_EN);
+                      Collections.addAll(letters, DIGITS);
+                      for (String l : new LinkedHashSet<>(letters)) {
+                          q.add(s + " " + l);
+                          if (prefix) q.add(l + " " + s);
+                      }
+                  }
+                  if (questions) {
+                      if (uk) for (String w : QUESTIONS_UK) q.add(w + " " + s);
+                      if (ru) for (String w : QUESTIONS_RU) q.add(w + " " + s);
+                  }
+                  if (commerce) {
+                      if (uk) for (String w : COMMERCE_UK) q.add(s + " " + w);
+                      if (ru) for (String w : COMMERCE_RU) q.add(s + " " + w);
+                  }
+                  if (cities) {
+                      if (uk) for (String w : CITIES_UK) q.add(s + " " + w);
+                      if (ru) for (String w : CITIES_RU) q.add(s + " " + w);
+                  }
+                  return new ArrayList<>(q);
+              }
+
+              /** Parses ["query",["s1","s2",...], ...] (Google / YouTube / Bing OpenSearch suggestion format). */
+              public static List<String> parseSuggestJson(String body) {
+                  List<String> out = new ArrayList<>();
+                  if (body == null) return out;
+                  int start = body.indexOf('[', body.indexOf('[') + 1);    // second "[" = the suggestions array
+                  if (start < 0) return out;
+                  int i = start + 1;
+                  StringBuilder cur = null;
+                  int depth = 1;
+                  for (; i < body.length() && depth > 0; i++) {
+                      char c = body.charAt(i);
+                      if (cur != null) {
+                          if (c == '\\' && i + 1 < body.length()) {
+                              char n = body.charAt(++i);
+                              if (n == 'u' && i + 4 < body.length()) {
+                                  try { cur.append((char) Integer.parseInt(body.substring(i + 1, i + 5), 16)); } catch (Exception ignored) { }
+                                  i += 4;
+                              } else if (n == 'n') cur.append(' ');
+                              else cur.append(n);
+                          } else if (c == '"') {
+                              if (depth == 1) out.add(cur.toString());
+                              cur = null;
+                          } else cur.append(c);
+                      } else if (c == '"') cur = new StringBuilder();
+                      else if (c == '[') depth++;
+                      else if (c == ']') depth--;
+                  }
+                  return out;
+              }
+
+              /** Normalises a keyword: lower case, single spaces, trimmed. */
+              public static String normKeyword(String k) {
+                  return k.toLowerCase(Locale.ROOT).replace('\u00A0', ' ').replaceAll("\\s+", " ").trim();
+              }
+
+              /** True if the keyword contains any minus word (whole word or word start, case-insensitive). */
+              public static boolean hasMinus(String keyword, List<String> minus) {
+                  if (minus.isEmpty()) return false;
+                  String[] words = normKeyword(keyword).split("[\\s\\-/]+");
+                  for (String m : minus) {
+                      String mm = normKeyword(m);
+                      if (mm.isEmpty()) continue;
+                      if (mm.contains(" ")) { if (normKeyword(keyword).contains(mm)) return true; continue; }
+                      boolean stem = mm.endsWith("*") || mm.length() >= 4;   // "безкоштовн" matches all forms, "бу" only the word "бу"
+                      String base = mm.replace("*", "");
+                      for (String w : words) if (stem ? w.startsWith(base) : w.equals(base)) return true;
+                  }
+                  return false;
+              }
+
+              /** Most frequent words across a keyword list (for grouping / quick filters). Stop words skipped. */
+              public static List<Map.Entry<String, Integer>> topWords(List<String> keywords, int max, List<String> skip) {
+                  final Map<String, Integer> cnt = new HashMap<>();
+                  java.util.Set<String> skipSet = new java.util.HashSet<>();
+                  for (String s : skip) for (String w : normKeyword(s).split(" ")) skipSet.add(w);
+                  for (String k : keywords) {
+                      java.util.Set<String> seen = new java.util.HashSet<>();
+                      for (String w : normKeyword(k).split("[\\s,.!?()\"«»]+")) {
+                          if (w.length() < 3 || STOP.contains(w) || skipSet.contains(w) || !seen.add(w)) continue;
+                          Integer c = cnt.get(w);
+                          cnt.put(w, c == null ? 1 : c + 1);
+                      }
+                  }
+                  List<Map.Entry<String, Integer>> l = new ArrayList<>(cnt.entrySet());
+                  Collections.sort(l, new Comparator<Map.Entry<String, Integer>>() {
+                      @Override public int compare(Map.Entry<String, Integer> a, Map.Entry<String, Integer> b) {
+                          int d = b.getValue() - a.getValue();
+                          return d != 0 ? d : a.getKey().compareTo(b.getKey());
+                      }
+                  });
+                  return l.size() > max ? l.subList(0, max) : l;
+              }
+
+              static final java.util.Set<String> STOP = new java.util.HashSet<>(java.util.Arrays.asList(
+                      "для", "или", "как", "что", "это", "все", "при", "без", "под", "над", "про", "его", "her", "the", "and", "for", "with",
+                      "від", "або", "що", "які", "яка", "який", "чи", "так", "вже", "так", "щоб", "есть", "был", "как", "где", "чем"));
+
+              // ===================================================================== HTML analysis
+              public static final class Page {
+                  public String title, description, robotsMeta, canonical, lang, viewport, charset, ogTitle, ogDescription, ogImage, twitterCard, favicon;
+                  public final List<String> h1 = new ArrayList<>(), h2 = new ArrayList<>(), h3 = new ArrayList<>();
+                  public final List<String> hreflang = new ArrayList<>(), schemaTypes = new ArrayList<>();
+                  public int images, imagesNoAlt, linksInternal, linksExternal, linksNofollow, words, scripts, styles, iframes;
+                  public final List<String> imagesNoAltSrc = new ArrayList<>();
+                  public String text = "";
+              }
+
+              private static final int F = Pattern.CASE_INSENSITIVE | Pattern.DOTALL;
+
+              public static String attr(String tag, String name) {
+                  Matcher m = Pattern.compile("\\b" + name + "\\s*=\\s*(\"([^\"]*)\"|'([^']*)'|([^\\s>]+))", F).matcher(tag);
+                  if (!m.find()) return null;
+                  String v = m.group(2) != null ? m.group(2) : m.group(3) != null ? m.group(3) : m.group(4);
+                  return decodeEntities(v).trim();
+              }
+
+              public static String decodeEntities(String s) {
+                  if (s == null) return null;
+                  s = s.replace("&amp;", "&").replace("&quot;", "\"").replace("&#39;", "'").replace("&apos;", "'")
+                          .replace("&lt;", "<").replace("&gt;", ">").replace("&nbsp;", " ").replace("&laquo;", "«").replace("&raquo;", "»")
+                          .replace("&mdash;", "—").replace("&ndash;", "–").replace("&hellip;", "…");
+                  Matcher m = Pattern.compile("&#(x?)([0-9a-fA-F]+);").matcher(s);
+                  StringBuffer sb = new StringBuffer();
+                  while (m.find()) {
+                      String rep;
+                      try { rep = String.valueOf((char) Integer.parseInt(m.group(2), m.group(1).isEmpty() ? 10 : 16)); }
+                      catch (Exception e) { rep = m.group(); }
+                      m.appendReplacement(sb, Matcher.quoteReplacement(rep));
+                  }
+                  m.appendTail(sb);
+                  return s.isEmpty() ? s : sb.toString();
+              }
+
+              static String stripTags(String html) {
+                  return decodeEntities(html.replaceAll("(?is)<[^>]+>", " ")).replaceAll("\\s+", " ").trim();
+              }
+
+              public static String host(String url) {
+                  Matcher m = Pattern.compile("^[a-z]+://([^/:?#]+)", Pattern.CASE_INSENSITIVE).matcher(url.trim());
+                  return m.find() ? m.group(1).toLowerCase(Locale.ROOT).replaceFirst("^www\\.", "") : "";
+              }
+
+              public static Page analyze(String html, String pageUrl) {
+                  Page p = new Page();
+                  if (html == null) html = "";
+                  String head = html;
+                  Matcher t = Pattern.compile("<title[^>]*>(.*?)</title>", F).matcher(head);
+                  if (t.find()) p.title = stripTags(t.group(1));
+                  Matcher meta = Pattern.compile("<meta\\b[^>]*>", F).matcher(html);
+                  while (meta.find()) {
+                      String tag = meta.group();
+                      String name = attr(tag, "name"), prop = attr(tag, "property"), content = attr(tag, "content");
+                      String key = (name != null ? name : prop != null ? prop : "").toLowerCase(Locale.ROOT);
+                      if (attr(tag, "charset") != null) p.charset = attr(tag, "charset");
+                      if (content == null) continue;
+                      switch (key) {
+                          case "description": if (p.description == null) p.description = content; break;
+                          case "robots": case "googlebot": p.robotsMeta = p.robotsMeta == null ? content : p.robotsMeta + ", " + content; break;
+                          case "viewport": p.viewport = content; break;
+                          case "og:title": p.ogTitle = content; break;
+                          case "og:description": p.ogDescription = content; break;
+                          case "og:image": p.ogImage = content; break;
+                          case "twitter:card": p.twitterCard = content; break;
+                          default: break;
+                      }
+                  }
+                  Matcher link = Pattern.compile("<link\\b[^>]*>", F).matcher(html);
+                  while (link.find()) {
+                      String tag = link.group();
+                      String rel = attr(tag, "rel");
+                      if (rel == null) continue;
+                      rel = rel.toLowerCase(Locale.ROOT);
+                      if (rel.equals("canonical")) p.canonical = attr(tag, "href");
+                      else if (rel.equals("alternate") && attr(tag, "hreflang") != null) p.hreflang.add(attr(tag, "hreflang") + " → " + attr(tag, "href"));
+                      else if (rel.contains("icon") && p.favicon == null) p.favicon = attr(tag, "href");
+                  }
+                  Matcher htmlTag = Pattern.compile("<html\\b[^>]*>", F).matcher(html);
+                  if (htmlTag.find()) p.lang = attr(htmlTag.group(), "lang");
+                  for (int lvl = 1; lvl <= 3; lvl++) {
+                      Matcher h = Pattern.compile("<h" + lvl + "\\b[^>]*>(.*?)</h" + lvl + ">", F).matcher(html);
+                      List<String> dst = lvl == 1 ? p.h1 : lvl == 2 ? p.h2 : p.h3;
+                      while (h.find()) dst.add(stripTags(h.group(1)));
+                  }
+                  Matcher img = Pattern.compile("<img\\b[^>]*>", F).matcher(html);
+                  while (img.find()) {
+                      p.images++;
+                      String alt = attr(img.group(), "alt");
+                      if (alt == null || alt.isEmpty()) {
+                          p.imagesNoAlt++;
+                          String src = attr(img.group(), "src");
+                          if (src != null && p.imagesNoAltSrc.size() < 15) p.imagesNoAltSrc.add(src);
+                      }
+                  }
+                  String myHost = host(pageUrl);
+                  Matcher a = Pattern.compile("<a\\b[^>]*>", F).matcher(html);
+                  while (a.find()) {
+                      String href = attr(a.group(), "href");
+                      if (href == null || href.startsWith("#") || href.startsWith("javascript:") || href.startsWith("mailto:") || href.startsWith("tel:")) continue;
+                      String rel = attr(a.group(), "rel");
+                      if (rel != null && rel.toLowerCase(Locale.ROOT).contains("nofollow")) p.linksNofollow++;
+                      String h = host(href);
+                      if (h.isEmpty() || h.equals(myHost)) p.linksInternal++; else p.linksExternal++;
+                  }
+                  Matcher ld = Pattern.compile("<script[^>]*application/ld\\+json[^>]*>(.*?)</script>", F).matcher(html);
+                  while (ld.find()) {
+                      Matcher ty = Pattern.compile("\"@type\"\\s*:\\s*(\"([^\"]+)\"|\\[([^\\]]+)\\])").matcher(ld.group(1));
+                      while (ty.find()) {
+                          String v = ty.group(2) != null ? ty.group(2) : ty.group(3).replace("\"", "").trim();
+                          for (String one : v.split("\\s*,\\s*")) if (!p.schemaTypes.contains(one)) p.schemaTypes.add(one);
+                      }
+                  }
+                  p.scripts = count(html, "<script\\b");
+                  p.styles = count(html, "<link\\b[^>]*stylesheet");
+                  p.iframes = count(html, "<iframe\\b");
+                  String body = html.replaceAll("(?is)<(script|style|noscript|template|svg)\\b.*?</\\1>", " ");
+                  Matcher b = Pattern.compile("<body\\b[^>]*>(.*)</body>", F).matcher(body);
+                  String txt = stripTags(b.find() ? b.group(1) : body);
+                  p.text = txt;
+                  p.words = txt.isEmpty() ? 0 : txt.split("\\s+").length;
+                  return p;
+              }
+
+              static int count(String s, String regex) {
+                  Matcher m = Pattern.compile(regex, F).matcher(s);
+                  int n = 0;
+                  while (m.find()) n++;
+                  return n;
+              }
+
+              /** Occurrences of a phrase in text (case-insensitive, whole-word-ish). */
+              public static int occurrences(String text, String phrase) {
+                  if (text == null || phrase == null || phrase.trim().isEmpty()) return 0;
+                  String t = " " + normKeyword(text) + " ", p = normKeyword(phrase);
+                  int n = 0, i = 0;
+                  while ((i = t.indexOf(p, i)) >= 0) { n++; i += p.length(); }
+                  return n;
+              }
+
+              // ===================================================================== robots.txt
+              public static final class RobotsGroup {
+                  public final List<String> agents = new ArrayList<>();
+                  public final List<String[]> rules = new ArrayList<>();   // {"allow"|"disallow", path}
+              }
+
+              public static List<RobotsGroup> parseRobots(String txt, List<String> sitemapsOut) {
+                  List<RobotsGroup> groups = new ArrayList<>();
+                  RobotsGroup cur = null;
+                  boolean lastWasAgent = false;
+                  for (String raw : txt.split("\\r?\\n")) {
+                      String line = raw.replaceAll("#.*$", "").trim();
+                      int c = line.indexOf(':');
+                      if (c <= 0) continue;
+                      String k = line.substring(0, c).trim().toLowerCase(Locale.ROOT), v = line.substring(c + 1).trim();
+                      if (k.equals("user-agent")) {
+                          if (cur == null || !lastWasAgent) { cur = new RobotsGroup(); groups.add(cur); }
+                          cur.agents.add(v.toLowerCase(Locale.ROOT));
+                          lastWasAgent = true;
+                      } else {
+                          lastWasAgent = false;
+                          if (k.equals("sitemap")) { if (sitemapsOut != null) sitemapsOut.add(v); continue; }
+                          if (cur != null && (k.equals("allow") || k.equals("disallow"))) cur.rules.add(new String[]{k, v});
+                      }
+                  }
+                  return groups;
+              }
+
+              /** Google-style check: most specific group for the agent, longest matching rule wins, Allow wins ties. */
+              public static String robotsVerdict(List<RobotsGroup> groups, String agent, String path) {
+                  agent = agent.toLowerCase(Locale.ROOT);
+                  RobotsGroup best = null;
+                  int bestLen = -1;
+                  for (RobotsGroup g : groups) for (String a : g.agents) {
+                      if (a.equals("*") && bestLen < 0) { best = g; bestLen = 0; }
+                      else if (!a.equals("*") && agent.contains(a) && a.length() > bestLen) { best = g; bestLen = a.length(); }
+                  }
+                  if (best == null) return "Разрешено (нет подходящей группы)";
+                  String rule = null; int len = -1; boolean allow = true;
+                  for (String[] r : best.rules) {
+                      if (r[1].isEmpty()) continue;   // "Disallow:" with empty value = allow everything
+                      if (robotsMatch(r[1], path) && (r[1].length() > len || (r[1].length() == len && r[0].equals("allow")))) {
+                          len = r[1].length(); allow = r[0].equals("allow"); rule = r[0] + ": " + r[1];
+                      }
+                  }
+                  if (rule == null) return "Разрешено (ни одно правило не подходит)";
+                  return (allow ? "Разрешено" : "ЗАПРЕЩЕНО") + " — правило «" + rule + "»";
+              }
+
+              static boolean robotsMatch(String pattern, String path) {
+                  StringBuilder re = new StringBuilder("^");
+                  for (int i = 0; i < pattern.length(); i++) {
+                      char ch = pattern.charAt(i);
+                      if (ch == '*') re.append(".*");
+                      else if (ch == '$' && i == pattern.length() - 1) re.append("$");
+                      else re.append(Pattern.quote(String.valueOf(ch)));
+                  }
+                  return Pattern.compile(re.toString()).matcher(path).find();
+              }
+
+              // ===================================================================== sitemaps
+              public static final class SitemapInfo {
+                  public final List<String> urls = new ArrayList<>(), childSitemaps = new ArrayList<>();
+                  public String newestLastmod, oldestLastmod;
+              }
+
+              public static SitemapInfo parseSitemap(String xml) {
+                  SitemapInfo s = new SitemapInfo();
+                  boolean index = xml.contains("<sitemapindex");
+                  Matcher m = Pattern.compile("<loc>\\s*(?:<!\\[CDATA\\[)?(.*?)(?:\\]\\]>)?\\s*</loc>", F).matcher(xml);
+                  while (m.find()) (index ? s.childSitemaps : s.urls).add(decodeEntities(m.group(1).trim()));
+                  Matcher lm = Pattern.compile("<lastmod>\\s*(.*?)\\s*</lastmod>", F).matcher(xml);
+                  while (lm.find()) {
+                      String d = lm.group(1).trim();
+                      if (s.newestLastmod == null || d.compareTo(s.newestLastmod) > 0) s.newestLastmod = d;
+                      if (s.oldestLastmod == null || d.compareTo(s.oldestLastmod) < 0) s.oldestLastmod = d;
+                  }
+                  return s;
+              }
+
+              // ===================================================================== transliteration
+              /** Official Ukrainian transliteration (KMU resolution No. 55, 2010). */
+              public static String translitUk(String s) {
+                  StringBuilder out = new StringBuilder();
+                  String lower = s;
+                  for (int i = 0; i < lower.length(); i++) {
+                      char c = lower.charAt(i);
+                      boolean up = Character.isUpperCase(c);
+                      char lc = Character.toLowerCase(c);
+                      char prevCh = i == 0 ? ' ' : lower.charAt(i - 1);
+                      boolean start = i == 0 || !(Character.isLetter(prevCh) || prevCh == '\'' || prevCh == '’' || prevCh == 'ʼ');
+                      String r;
+                      switch (lc) {
+                          case 'а': r = "a"; break; case 'б': r = "b"; break; case 'в': r = "v"; break; case 'г': r = "h"; break;
+                          case 'ґ': r = "g"; break; case 'д': r = "d"; break; case 'е': r = "e"; break;
+                          case 'є': r = start ? "ye" : "ie"; break; case 'ж': r = "zh"; break;
+                          case 'з':
+                              r = (i + 1 < lower.length() && Character.toLowerCase(lower.charAt(i + 1)) == 'г') ? "zgh" : "z";
+                              if (r.equals("zgh")) i++;
+                              break;
+                          case 'и': r = "y"; break; case 'і': r = "i"; break; case 'ї': r = start ? "yi" : "i"; break;
+                          case 'й': r = start ? "y" : "i"; break; case 'к': r = "k"; break; case 'л': r = "l"; break;
+                          case 'м': r = "m"; break; case 'н': r = "n"; break; case 'о': r = "o"; break; case 'п': r = "p"; break;
+                          case 'р': r = "r"; break; case 'с': r = "s"; break; case 'т': r = "t"; break; case 'у': r = "u"; break;
+                          case 'ф': r = "f"; break; case 'х': r = "kh"; break; case 'ц': r = "ts"; break; case 'ч': r = "ch"; break;
+                          case 'ш': r = "sh"; break; case 'щ': r = "shch"; break; case 'ь': case '\'': case '’': case 'ʼ': r = ""; break;
+                          case 'ю': r = start ? "yu" : "iu"; break; case 'я': r = start ? "ya" : "ia"; break;
+                          // Russian letters that may appear in mixed text
+                          case 'ы': r = "y"; break; case 'э': r = "e"; break; case 'ё': r = "yo"; break; case 'ъ': r = ""; break;
+                          default: r = String.valueOf(c); up = false;
+                      }
+                      if (up && !r.isEmpty()) r = Character.toUpperCase(r.charAt(0)) + r.substring(1);
+                      out.append(r);
+                  }
+                  return out.toString();
+              }
+
+              /** Russian transliteration (simple, URL-friendly, close to Yandex/GOST 7.79-B). */
+              public static String translitRu(String s) {
+                  String[][] map = {{"щ", "shch"}, {"ш", "sh"}, {"ч", "ch"}, {"ж", "zh"}, {"ю", "yu"}, {"я", "ya"}, {"ё", "yo"}, {"х", "kh"},
+                          {"ц", "ts"}, {"й", "y"}, {"ы", "y"}, {"э", "e"}, {"ъ", ""}, {"ь", ""}, {"а", "a"}, {"б", "b"}, {"в", "v"}, {"г", "g"},
+                          {"д", "d"}, {"е", "e"}, {"з", "z"}, {"и", "i"}, {"к", "k"}, {"л", "l"}, {"м", "m"}, {"н", "n"}, {"о", "o"}, {"п", "p"},
+                          {"р", "r"}, {"с", "s"}, {"т", "t"}, {"у", "u"}, {"ф", "f"}, {"і", "i"}, {"ї", "yi"}, {"є", "ye"}, {"ґ", "g"}};
+                  StringBuilder out = new StringBuilder();
+                  for (int i = 0; i < s.length(); i++) {
+                      String ch = s.substring(i, i + 1), lc = ch.toLowerCase(Locale.ROOT), r = ch;
+                      for (String[] m : map) if (m[0].equals(lc)) { r = m[1]; break; }
+                      if (!ch.equals(lc) && !r.isEmpty()) r = Character.toUpperCase(r.charAt(0)) + r.substring(1);
+                      out.append(r);
+                  }
+                  return out.toString();
+              }
+
+              public static String slug(String latin) {
+                  return latin.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "-").replaceAll("^-+|-+$", "");
+              }
+
+              // ===================================================================== text tools
+              public static List<Map.Entry<String, Integer>> wordFreq(String text, int n, int max) {
+                  Map<String, Integer> cnt = new LinkedHashMap<>();
+                  for (String sentence : normKeyword(text).split("[.!?;:\n]+")) {
+                  String[] w = sentence.trim().split("[^\\p{L}\\p{N}'’-]+");
+                  for (int i = 0; i + n <= w.length; i++) {
+                      StringBuilder sb = new StringBuilder();
+                      boolean skip = false;
+                      for (int j = 0; j < n; j++) {
+                          if (w[i + j].length() < (n == 1 ? 3 : 2) || (n == 1 && STOP.contains(w[i + j]))) { skip = true; break; }
+                          if (j > 0) sb.append(' ');
+                          sb.append(w[i + j]);
+                      }
+                      if (skip) continue;
+                      String k = sb.toString();
+                      Integer c = cnt.get(k);
+                      cnt.put(k, c == null ? 1 : c + 1);
+                  }
+                  }
+                  List<Map.Entry<String, Integer>> l = new ArrayList<>(cnt.entrySet());
+                  Collections.sort(l, new Comparator<Map.Entry<String, Integer>>() {
+                      @Override public int compare(Map.Entry<String, Integer> a, Map.Entry<String, Integer> b) { return b.getValue() - a.getValue(); }
+                  });
+                  return l.size() > max ? l.subList(0, max) : l;
+              }
+
+              public static String utm(String url, String source, String medium, String campaign, String term, String content) {
+                  StringBuilder q = new StringBuilder();
+                  String[][] p = {{"utm_source", source}, {"utm_medium", medium}, {"utm_campaign", campaign}, {"utm_term", term}, {"utm_content", content}};
+                  for (String[] kv : p) {
+                      if (kv[1] == null || kv[1].trim().isEmpty()) continue;
+                      q.append(q.length() == 0 ? "" : "&").append(kv[0]).append('=').append(enc(kv[1].trim()));
+                  }
+                  if (q.length() == 0) return url;
+                  String base = url.trim();
+                  String frag = "";
+                  int h = base.indexOf('#');
+                  if (h >= 0) { frag = base.substring(h); base = base.substring(0, h); }
+                  return base + (base.contains("?") ? "&" : "?") + q + frag;
+              }
+
+              static String enc(String s) {
+                  try { return java.net.URLEncoder.encode(s, "UTF-8").replace("+", "%20"); } catch (Exception e) { return s; }
+              }
+
+              public static String csvCell(String s) {
+                  if (s == null) return "";
+                  if (s.contains(",") || s.contains("\"") || s.contains("\n") || s.contains(";")) return "\"" + s.replace("\"", "\"\"") + "\"";
+                  return s;
+              }
+          }
+          EOF_TCK
+          cat > 'SeoPocket/app/src/main/res/values/styles.xml' <<'EOF_TCK'
+          <resources>
+              <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+                  <item name="android:colorAccent">#2E5BFF</item>
+                  <item name="android:windowLightStatusBar">true</item>
+                  <item name="android:statusBarColor">#F4F6FB</item>
+                  <item name="android:navigationBarColor">#F4F6FB</item>
+              </style>
+          </resources>
+          EOF_TCK
+          cat > 'SeoPocket/build.gradle' <<'EOF_TCK'
+          plugins {
+              id 'com.android.application' version '8.6.1' apply false
+          }
+          EOF_TCK
+          cat > 'SeoPocket/gradle.properties' <<'EOF_TCK'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          EOF_TCK
+          cat > 'SeoPocket/settings.gradle' <<'EOF_TCK'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
+          rootProject.name = 'SeoPocket'
+          include ':app'
+          EOF_TCK
+      - name: Build APK
+        working-directory: SeoPocket
+        run: gradle assembleDebug --no-daemon --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SeoPocket-1.0-apk
+          path: SeoPocket/app/build/outputs/apk/debug/*.apk
+      - name: Put APK into the repository (apk/)
+        run: |
+          mkdir -p apk
+          cp SeoPocket/app/build/outputs/apk/debug/app-debug.apk apk/SeoPocket-1.0.apk
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apk/SeoPocket-1.0.apk
+          git commit -m "APK SeoPocket 1.0 [skip ci]" || echo "nothing to commit"
+          for i in 1 2 3; do git pull --rebase && git push && break; sleep 5; done
